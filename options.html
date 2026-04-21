@@ -1,0 +1,55 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Video Downloader Settings</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main class="container">
+    <h1>Video Downloader Settings</h1>
+
+    <section class="panel">
+      <h2 id="languageHeading">Language</h2>
+      <label class="field-stack" for="languageSelect">
+        <span id="languageHelp" class="hint"></span>
+        <select id="languageSelect"></select>
+      </label>
+    </section>
+
+    <section class="panel">
+      <h2>Detection Types</h2>
+      <div id="typeGrid" class="type-grid"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Display</h2>
+      <label class="toggle-row">
+        <input type="checkbox" id="downloadHistoryEnabled" checked>
+        <span id="downloadHistoryEnabledLabel">Record downloaded video history and show downloaded badges</span>
+      </label>
+      <label class="toggle-row">
+        <input type="checkbox" id="preserveOldPages">
+        <span id="preserveOldPagesLabel">Keep results from closed tabs</span>
+      </label>
+    </section>
+
+    <section class="panel">
+      <h2>Cache</h2>
+      <label class="toggle-row">
+        <input type="checkbox" id="keepSettings" checked>
+        <span id="keepSettingsLabel">Keep user settings when clearing cache</span>
+      </label>
+      <button id="clearCacheBtn" class="danger">Clear all cache and runtime data</button>
+    </section>
+
+    <section class="panel actions">
+      <button id="saveBtn" class="primary">Save Settings</button>
+      <span id="statusText" class="status"></span>
+    </section>
+  </main>
+
+  <script type="module" src="options.js"></script>
+</body>
+</html>

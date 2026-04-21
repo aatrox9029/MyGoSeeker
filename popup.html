@@ -1,0 +1,66 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MyGoSeeker</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="toolbar">
+    <button id="rescanBtn" class="action">Rescan</button>
+    <button id="resetBypassBtn" class="action">Reset Bypass</button>
+    <button id="openOptionsBtn" class="action">Settings</button>
+  </header>
+
+  <section id="setupBanner" class="setup-banner" hidden>
+    <div id="setupBannerText" class="setup-banner-text"></div>
+    <div class="setup-banner-actions">
+      <button id="setupDownloadBtn" class="setup-download-btn">Download setup.exe</button>
+      <button id="setupRefreshBtn" class="setup-refresh-btn">Refresh</button>
+    </div>
+  </section>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="available" role="tab">Available</button>
+    <button class="tab" data-tab="downloading" role="tab">Downloading</button>
+    <button class="tab" data-tab="completed" role="tab">Completed</button>
+  </nav>
+
+  <main>
+    <section id="available" class="panel active"></section>
+    <section id="downloading" class="panel"></section>
+    <section id="completed" class="panel"></section>
+  </main>
+
+  <template id="cardTemplate">
+    <article class="card">
+      <button class="ignore-btn" title="Ignore">x</button>
+      <span class="downloaded-badge" hidden>Downloaded</span>
+      <div class="thumb-wrap">
+        <img class="thumb" alt="thumbnail">
+      </div>
+      <div class="content">
+        <div class="title-row">
+          <h3 class="title"></h3>
+        </div>
+        <label class="variant-row">
+          <span>Variant</span>
+          <select class="variant-select"></select>
+        </label>
+        <div class="actions">
+          <button class="download-btn">Download</button>
+          <button class="export-record-btn" title="Export URLs to text file">Export Record</button>
+        </div>
+        <div class="status-row">
+          <div class="progress"><div class="progress-inner"></div></div>
+          <div class="status-text"></div>
+          <div class="error-text"></div>
+        </div>
+      </div>
+    </article>
+  </template>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

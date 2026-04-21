@@ -59,13 +59,3 @@ The project is designed to keep browser-specific work inside the extension while
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-release.ps1
 ```
-
-## Current Release Workflow
-
-The project currently builds:
-
-- extension package artifacts in `dist/`
-- native host executable via `native-host/`
-- canonical publishable bundle in `release-package/`
-
-The release package is the primary publish target for GitHub releases.

@@ -1,5 +1,5 @@
 # MyGoSeeker
-
+ 
 Detect and download accessible video sources from Chromium pages.
 
 MyGoSeeker is a Chromium extension focused on detecting videos on the current page, separating them into clear download cards, and giving you practical download choices without forcing premium plans or hidden limits.

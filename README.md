@@ -25,7 +25,7 @@ MyGoSeeker is a Chromium extension focused on detecting videos on the current pa
 
 ## Install
 
-Use `dist/MyGoSeeker-1.2.2-Extension.zip`, or run the newest `MyGoSeeker-1.2.2-Setup*.exe` in `dist` to extract it. In Chrome/Edge, open the extensions page, enable Developer mode, choose **Load unpacked**, and select the extracted folder containing `manifest.json`. Reload the extension and refresh video pages after upgrading. Requires Chromium 116 or later.
+Use `dist/MyGoSeeker-1.0.2-Extension.zip`, or run the newest `MyGoSeeker-1.0.2-Setup*.exe` in `dist` to extract it. In Chrome/Edge, open the extensions page, enable Developer mode, choose **Load unpacked**, and select the extracted folder containing `manifest.json`. Reload the extension and refresh video pages after upgrading. Requires Chromium 116 or later.
 
 The EXE is an **extension extraction assistant**. It does not install or update a native messaging downloader. This repository does not contain that downloader's source; the extension uses its own fallback when the native host is unavailable. ZIP/EXE checksums are in `dist/SHA256.json`.
 

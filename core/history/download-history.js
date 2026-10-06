@@ -56,8 +56,10 @@ export function cardHasDownloadedHistory(card, historyEntries, settings) {
 }
 
 export function applyDownloadHistory(cards, historyEntries, settings) {
+  const historySet = new Set(Array.isArray(historyEntries) ? historyEntries : []);
   return (Array.isArray(cards) ? cards : []).map((card) => ({
     ...card,
-    isPreviouslyDownloaded: cardHasDownloadedHistory(card, historyEntries, settings)
+    isPreviouslyDownloaded: isDownloadHistoryEnabled(settings)
+      && (card.variants || []).some((variant) => historySet.has(normalizeDownloadHistoryUrl(variant?.url)))
   }));
 }

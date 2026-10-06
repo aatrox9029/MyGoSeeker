@@ -1,13 +1,8 @@
 {
   "manifest_version": 3,
   "name": "MyGoSeeker",
-  "version": "1.2.0",
-  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwPHr5nb9g8U2uqI7nElCK4Lb57/rjrk5CZoHvz/+6QNv/ueba49WEPOWGZQJCYQQ9ahzrbwVqvgL5ieVS2tvGIEALKoytVVPSuM87elNR+Pi7Cfjyla0+i3k55Fx6yZoLhmqVPclLcRiKwyKVIRU+6xGFmnIGOkOojKjF8xPiJ5GPDw6WJtd1YvbMreQOGlvWGTek2uZph01gsyHxYfMyfUNX1JuKco2C8X19C/nZj8mPOoSK0LXtr9g80BsRp8sgua2pNZBbKzsZugXG5DA/qfqbmI3DKTfn5ZYh3Lib+WlYtmxg+wpqVrTV6hmjXDoqyLdGLu5IX85vzw/zRW9RQIDAQAB",
-  "browser_specific_settings": {
-    "gecko": {
-      "id": "mygoseeker@aatrox9029.local"
-    }
-  },
+  "version": "1.2.2",
+  "minimum_chrome_version": "116",
   "description": "Detect, organize, and download videos from the current page.",
   "permissions": [
     "storage",
@@ -51,6 +46,10 @@
         "<all_urls>"
       ],
       "js": [
+        "extension/content/fetch-blob.js",
+        "extension/content/blob-download.js",
+        "extension/content/record-video.js",
+        "extension/content/binary-save.js",
         "content.js"
       ],
       "run_at": "document_idle"

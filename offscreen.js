@@ -1,8 +1,16 @@
 import { FFmpeg } from "./vendor/ffmpeg/ffmpeg/index.js";
 import { detectContainerSignature, validateFinalizedMediaBlob } from "./core/remux/finalize-media.js";
+import { getBinaryJob, putBinaryJob } from "./core/files/binary-store.js";
 
 const ffmpeg = new FFmpeg();
 let ffmpegLoaded = false;
+let remuxQueue = Promise.resolve();
+const outputUrls = new Set();
+let ffmpegLog = [];
+ffmpeg.on("log", ({ message }) => {
+  ffmpegLog.push(message);
+  if (ffmpegLog.length > 100) ffmpegLog.shift();
+});
 
 async function ensureLoaded() {
   if (ffmpegLoaded) {
@@ -49,10 +57,11 @@ async function cleanupJobFiles(job) {
 }
 
 async function handleRemux(job) {
+  ffmpegLog = [];
   await ensureLoaded();
-  await writeJobFiles(job);
 
   try {
+    await writeJobFiles(job);
     const args = job.audio
       ? [
           "-y",
@@ -75,7 +84,8 @@ async function handleRemux(job) {
           job.outputFileName
         ];
 
-    await ffmpeg.exec(args);
+    const exitCode = await ffmpeg.exec(args, 120000);
+    if (exitCode !== 0) throw new Error(`FFmpeg remux failed (exit ${exitCode})`);
     const data = await ffmpeg.readFile(job.outputFileName);
     const arrayBuffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
     const blob = new Blob([arrayBuffer], { type: "video/mp4" });
@@ -84,26 +94,49 @@ async function handleRemux(job) {
     validation.container = container;
     validation.containerValid = container === "mp4";
     validation.ok = validation.ok && validation.containerValid;
+    if (!validation.ok) throw new Error("Finalized media validation failed");
+    const objectUrl = URL.createObjectURL(blob);
+    outputUrls.add(objectUrl);
     return {
       ok: true,
       mimeType: "video/mp4",
       outputFileName: job.outputFileName,
-      arrayBuffer,
+      objectUrl,
       validation,
+      diagnostics: [...ffmpegLog],
       container
     };
+  } catch (error) {
+    throw new Error(`${error instanceof Error ? error.message : String(error)}\n${ffmpegLog.slice(-20).join("\n")}`);
   } finally {
     await cleanupJobFiles(job);
   }
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "OFFSCREEN_RELEASE_URL") {
+    if (outputUrls.delete(message.objectUrl)) URL.revokeObjectURL(message.objectUrl);
+    sendResponse({ ok: true });
+    return false;
+  }
   if (message?.type !== "OFFSCREEN_REMUX_HLS") {
     return false;
   }
 
-  handleRemux(message.job)
-    .then((result) => sendResponse(result))
+  const operation = remuxQueue.then(async () => {
+    const job = await getBinaryJob(message.jobKey);
+    if (!job) throw new Error("Remux job not found");
+    const result = await handleRemux(job);
+    try { await putBinaryJob(`${message.jobKey}:result`, result); }
+    catch (error) {
+      outputUrls.delete(result.objectUrl);
+      URL.revokeObjectURL(result.objectUrl);
+      throw error;
+    }
+    return { ok: true };
+  });
+  remuxQueue = operation.catch(() => {});
+  operation.then((result) => sendResponse(result))
     .catch((error) => {
       sendResponse({
         ok: false,

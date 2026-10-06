@@ -10,7 +10,7 @@ export function detectContainerSignature(arrayBuffer) {
       return "mp4";
     }
   }
-  if (bytes.length >= 3 && bytes[0] === 0x47 && bytes[188] === 0x47) {
+  if (bytes.length >= 189 && bytes[0] === 0x47 && bytes[188] === 0x47) {
     return "ts";
   }
   if (bytes.length >= 4 && readAscii(bytes, 0, 4) === "\x1aE\xdf\xa3") {
@@ -24,11 +24,11 @@ export async function validateFinalizedMediaBlob(blob, expectedDuration = 0) {
   const media = document.createElement("video");
   media.preload = "metadata";
   media.muted = true;
-  media.src = objectUrl;
 
   try {
     await new Promise((resolve, reject) => {
       const cleanup = () => {
+        clearTimeout(timer);
         media.removeEventListener("loadedmetadata", onLoaded);
         media.removeEventListener("error", onError);
       };
@@ -42,6 +42,11 @@ export async function validateFinalizedMediaBlob(blob, expectedDuration = 0) {
       };
       media.addEventListener("loadedmetadata", onLoaded, { once: true });
       media.addEventListener("error", onError, { once: true });
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Finalized media metadata timed out"));
+      }, 15000);
+      media.src = objectUrl;
     });
 
     const duration = Number.isFinite(media.duration) ? media.duration : 0;

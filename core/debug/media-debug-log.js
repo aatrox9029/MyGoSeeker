@@ -29,6 +29,7 @@ export function addDebugEntry(log, level, stage, message, details = undefined) {
     message,
     details: sanitizeDetails(details)
   });
+  if (log.entries.length > 1000) log.entries.splice(0, log.entries.length - 1000);
   log.updatedAt = Date.now();
   return log;
 }

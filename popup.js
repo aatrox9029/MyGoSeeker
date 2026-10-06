@@ -1,4 +1,5 @@
 import { getTranslation, normalizeLocale, translateStage } from "./i18n.js";
+import { buildVariantMethodOptionLabel, getDownloadModeDisplayLabel } from "./core/download-methods.js";
 import { createStateRefreshController } from "./extension/popup/state-refresh.js";
 import { createSetupBannerController } from "./extension/popup/setup-banner.js";
 import { RELEASES_PAGE_URL } from "./extension/background/setup-release.js";
@@ -40,7 +41,8 @@ const setupBannerController = createSetupBannerController({
 function formatStatus(card) {
   const progress = Number.isFinite(card.progress) ? Math.round(card.progress) : 0;
   const stage = translateStage(locale, card.stage || "Ready");
-  const mode = card.downloadMode ? ` [${card.downloadMode}]` : "";
+  const modeLabel = getDownloadModeDisplayLabel(card.downloadMode);
+  const mode = modeLabel ? ` [${modeLabel}]` : "";
   return `${stage}${mode} ${progress > 0 ? `(${progress}%)` : ""}`.trim();
 }
 
@@ -232,7 +234,7 @@ function syncVariantOptions(select, card) {
   const variants = sortVariantsForDisplay(card.variants);
   const nextOptions = variants.map((variant) => ({
     value: variant.id,
-    text: `${formatVariantDisplayLabel(variant.label)} - ${variant.source}`
+    text: buildVariantMethodOptionLabel(variant, formatVariantDisplayLabel(variant.label))
   }));
   const currentOptions = [...select.options].map((option) => ({
     value: option.value,

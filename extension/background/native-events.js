@@ -3,7 +3,8 @@ export function createNativePortMessageHandler({
   getStateCards,
   findCardByNativeJobId,
   setCardStatus,
-  requestNativeReport
+  requestNativeReport,
+  fallbackNativeDownload
 }) {
   return async function handleNativePortMessage(message) {
     if (!message || typeof message !== "object") {
@@ -13,6 +14,10 @@ export function createNativePortMessageHandler({
     if (message.type === "NATIVE_HOST_DISCONNECTED") {
       const affectedCards = getStateCards().filter((card) => card.nativeJobId && card.status === "downloading");
       for (const card of affectedCards) {
+        if (fallbackNativeDownload) {
+          await fallbackNativeDownload(card, message);
+          continue;
+        }
         await setCardStatus(card.id, {
           status: "error",
           stage: "Native host disconnected",
@@ -77,11 +82,14 @@ export function createNativePortMessageHandler({
         return;
       case EVENT_TYPES.JOB_WARNING:
         await setCardStatus(card.id, {
-          status: card.status === "completed" ? "completed" : "downloading",
           stage: typeof message.message === "string" ? message.message : card.stage
         });
         return;
       case EVENT_TYPES.JOB_FAILED:
+        if (fallbackNativeDownload) {
+          await fallbackNativeDownload(card, message);
+          return;
+        }
         await setCardStatus(card.id, {
           status: "error",
           stage: typeof message.stage === "string" ? message.stage : "Native job failed",

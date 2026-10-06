@@ -1,10 +1,10 @@
-const RELEASES_PAGE_URL = "https://github.com/aatrox9029/MyGoSeeker/releases";
+const RELEASES_PAGE_URL = "";
 
 export function createSetupReleaseController({
   ensureNativePort,
   isNativeHostConnected
 }) {
-  async function getSetupState() {
+  async function getSetupState(forceRefresh = false) {
     if (isNativeHostConnected()) {
       return {
         nativeHostInstalled: true,
@@ -15,7 +15,7 @@ export function createSetupReleaseController({
     }
 
     try {
-      await ensureNativePort();
+      await ensureNativePort(forceRefresh);
       return {
         nativeHostInstalled: true,
         showDownload: false,
@@ -25,7 +25,7 @@ export function createSetupReleaseController({
     } catch (error) {
       return {
         nativeHostInstalled: false,
-        showDownload: true,
+        showDownload: false,
         reason: error instanceof Error ? error.message : String(error),
         releasesPageUrl: RELEASES_PAGE_URL
       };

@@ -23,6 +23,8 @@ const DEFAULT_SETTINGS = {
 };
 
 let initialized = false;
+let initializationPromise;
+const startingCards = new Set();
 let settings = structuredClone(DEFAULT_SETTINGS);
 let state = createEmptyState();
 let downloadHistory = [];
@@ -34,7 +36,6 @@ const m3u8MasterCache = new Map();
 const networkResponseMeta = new Map();
 const debugLogs = new Map();
 const M3U8_CACHE_TTL_MS = 5 * 60 * 1000;
-const TRANSFER_BASE64_CHUNK_SIZE = 96 * 1024;
 const PAGE_THUMB_CACHE_TTL_MS = 30 * 1000;
 const pageThumbnailCache = new Map();
 const VIDEO_FILE_EXTENSIONS = new Set(["mp4", "webm", "mov", "m4v", "mkv", "avi", "flv", "mpeg", "mpg", "ts", "m2ts"]);
@@ -71,7 +72,7 @@ function cloneSettingsWithDefaults(input) {
 }
 
 function normalizeStoredState(input) {
-  if (!input || typeof input !== "object" || typeof input.cards !== "object") {
+  if (!input || typeof input !== "object" || !input.cards || typeof input.cards !== "object") {
     return createEmptyState();
   }
 
@@ -87,6 +88,8 @@ function normalizeStoredState(input) {
       pageTitle: typeof card.pageTitle === "string" ? card.pageTitle : "",
       title: typeof card.title === "string" ? card.title : "Video",
       thumbnail: typeof card.thumbnail === "string" ? card.thumbnail : "",
+      identityKey: typeof card.identityKey === "string" ? card.identityKey : "",
+      mediaKey: typeof card.mediaKey === "string" ? card.mediaKey : "",
       ignored: Boolean(card.ignored),
       selectedVariantId: typeof card.selectedVariantId === "string" ? card.selectedVariantId : "",
       selectionLocked: Boolean(card.selectionLocked),
@@ -99,6 +102,7 @@ function normalizeStoredState(input) {
       debugReport: typeof card.debugReport === "string" ? card.debugReport : "",
       lastValidation: card.lastValidation && typeof card.lastValidation === "object" ? card.lastValidation : null,
       activeDownloadId: Number.isInteger(card.activeDownloadId) ? card.activeDownloadId : 0,
+      activeObjectUrl: typeof card.activeObjectUrl === "string" ? card.activeObjectUrl : "",
       createdAt: Number.isFinite(card.createdAt) ? card.createdAt : Date.now(),
       updatedAt: Number.isFinite(card.updatedAt) ? card.updatedAt : Date.now(),
       completedAt: Number.isFinite(card.completedAt) ? card.completedAt : 0,
@@ -128,7 +132,10 @@ function normalizeVariant(variant) {
   return {
     id: typeof variant.id === "string" ? variant.id : `variant_${hashString(variant.url)}`,
     url: variant.url,
+    audioUrl: typeof variant.audioUrl === "string" ? variant.audioUrl : "",
+    masterUrl: typeof variant.masterUrl === "string" ? variant.masterUrl : "",
     type,
+    methodFamily: normalizeMethodFamily(variant.methodFamily),
     source: typeof variant.source === "string" ? variant.source : "unknown",
     label: typeof variant.label === "string" ? variant.label : buildVariantLabel(variant.url, type),
     score: Number.isFinite(variant.score) ? variant.score : computeQualityScore(variant.url, type),
@@ -138,14 +145,67 @@ function normalizeVariant(variant) {
   };
 }
 
+function ensureVariantMethodCoverage(variants) {
+  if (!Array.isArray(variants) || variants.length === 0) {
+    return { variants: [], changed: false };
+  }
+  const result = [];
+  const seenBlobKeys = new Set();
+  let changed = false;
+
+  for (const variant of variants) {
+    if (!variant) {
+      continue;
+    }
+    if (variant.type === "blob") {
+      const blobKey = `${variant.url}|${variant.type}|${variant.source || "unknown"}`;
+      if (seenBlobKeys.has(blobKey)) {
+        changed = true;
+        continue;
+      }
+      seenBlobKeys.add(blobKey);
+      const families = ["network", "record"];
+      for (const methodFamily of families) {
+        const nextVariant = {
+          ...variant,
+          id: `variant_${hashString(`${blobKey}|${methodFamily}`)}`,
+          methodFamily
+        };
+        result.push(nextVariant);
+      }
+      const blobFamilyCount = variants.filter((item) => item?.type === "blob" && `${item.url}|${item.type}|${item.source || "unknown"}` === blobKey).length;
+      if (blobFamilyCount !== 2 || !variants.some((item) => item?.type === "blob" && item?.methodFamily === "record" && `${item.url}|${item.type}|${item.source || "unknown"}` === blobKey)) {
+        changed = true;
+      }
+      continue;
+    }
+    const nextFamily = normalizeMethodFamily(variant.methodFamily);
+    if (nextFamily !== variant.methodFamily) {
+      changed = true;
+    }
+    result.push({
+      ...variant,
+      methodFamily: nextFamily
+    });
+  }
+
+  return { variants: result, changed };
+}
+
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
 async function ensureInitialized() {
-  if (initialized) {
-    return;
-  }
+  if (initialized) return;
+  if (!initializationPromise) initializationPromise = initializeState().catch((error) => {
+    initializationPromise = null;
+    throw error;
+  });
+  return initializationPromise;
+}
+
+async function initializeState() {
   const stored = await chrome.storage.local.get([STATE_KEY, SETTINGS_KEY, DOWNLOAD_HISTORY_KEY]);
   settings = cloneSettingsWithDefaults(stored[SETTINGS_KEY]);
   state = normalizeStoredState(stored[STATE_KEY]);
@@ -156,6 +216,11 @@ async function ensureInitialized() {
       continue;
     }
     let cardChanged = false;
+    const withMethods = ensureVariantMethodCoverage(card.variants);
+    if (withMethods.changed) {
+      card.variants = withMethods.variants;
+      cardChanged = true;
+    }
     const deduped = dedupeVariantsBySimilarity(card.variants);
     if (deduped.changed) {
       card.variants = deduped.variants;
@@ -379,7 +444,8 @@ function normalizeUrlForVariantKey(rawUrl) {
   }
   try {
     const url = new URL(rawUrl);
-    return `${url.origin}${url.pathname}`.toLowerCase();
+    url.hash = "";
+    return url.href;
   } catch {
     return rawUrl.split("?")[0].toLowerCase();
   }
@@ -419,6 +485,7 @@ function extractBitrateFromLabel(label) {
 
 function buildVariantSimilarityKey(variant) {
   const baseType = normalizeType(variant.type);
+  const methodFamily = getVariantMethodFamily(variant);
   const urlKey = normalizeUrlForVariantKey(variant.url);
   const labelDims = extractResolutionFromLabel(variant.label);
   const urlDims = extractDimensions(variant.url);
@@ -431,12 +498,12 @@ function buildVariantSimilarityKey(variant) {
   const qualityEdge = width && height ? Math.min(width, height) : height;
 
   if (qualityEdge) {
-    return `${baseType}|edge:${qualityEdge}|bitrate:${bitrateBucket || 0}`;
+    return `${baseType}|${methodFamily}|${urlKey}|edge:${qualityEdge}|bitrate:${bitrateBucket || 0}`;
   }
   if (bitrateBucket) {
-    return `${baseType}|bitrate:${bitrateBucket}`;
+    return `${baseType}|${methodFamily}|${urlKey}|bitrate:${bitrateBucket}`;
   }
-  return `${baseType}|${urlKey}`;
+  return `${baseType}|${methodFamily}|${urlKey}`;
 }
 
 function variantLabelDetailScore(variant) {
@@ -599,6 +666,7 @@ function reconcileCardSelection(card) {
   if (!card || !Array.isArray(card.variants) || card.variants.length === 0) {
     return false;
   }
+  if (card.status === "downloading") return false;
   const selectedStillExists = card.variants.some((variant) => variant.id === card.selectedVariantId);
   if (card.selectedVariantId && selectedStillExists && card.selectionLocked) {
     return false;
@@ -662,6 +730,7 @@ function cacheNetworkResponseMeta(details) {
   if (!details?.url) {
     return;
   }
+  if (networkResponseMeta.size >= 2000) networkResponseMeta.delete(networkResponseMeta.keys().next().value);
   networkResponseMeta.set(details.url, {
     statusCode: Number.isInteger(details.statusCode) ? details.statusCode : 0,
     requestType: typeof details.type === "string" ? details.type : "",
@@ -723,6 +792,9 @@ function getVariantAttemptPriority(variant) {
   if (variant.isM3u8) {
     priority += 80;
   }
+  if (getVariantMethodFamily(variant) === "record") {
+    priority -= 5000;
+  }
   return priority;
 }
 
@@ -734,30 +806,26 @@ function buildDownloadAttemptList(card, preferredVariantId) {
   if (!preferred) {
     return [];
   }
+  const preferredFamily = getVariantMethodFamily(preferred);
 
   const preferredKey = buildVariantSimilarityKey(preferred);
   const sameQuality = card.variants
-    .filter((variant) => variant.id !== preferred.id && buildVariantSimilarityKey(variant) === preferredKey)
+    .filter((variant) => {
+      return variant.id !== preferred.id
+        && getVariantMethodFamily(variant) === preferredFamily
+        && buildVariantSimilarityKey(variant) === preferredKey;
+    })
     .sort((a, b) => getVariantAttemptPriority(b) - getVariantAttemptPriority(a));
 
   const remaining = card.variants
-    .filter((variant) => variant.id !== preferred.id && buildVariantSimilarityKey(variant) !== preferredKey)
+    .filter((variant) => {
+      return variant.id !== preferred.id
+        && getVariantMethodFamily(variant) === preferredFamily
+        && buildVariantSimilarityKey(variant) !== preferredKey;
+    })
     .sort((a, b) => getVariantAttemptPriority(b) - getVariantAttemptPriority(a));
 
   return [preferred.id, ...sameQuality.map((variant) => variant.id), ...remaining.map((variant) => variant.id)];
-}
-
-async function clearRuntimeMemory() {
-  activeDownloads.clear();
-  m3u8MasterCache.clear();
-  pageThumbnailCache.clear();
-  tabMeta.clear();
-  try {
-    const keys = await caches.keys();
-    await Promise.all(keys.map((key) => caches.delete(key)));
-  } catch {
-    // Ignore when CacheStorage is not available.
-  }
 }
 
 async function tryRemoveDownloadedFile(downloadId) {
@@ -774,8 +842,8 @@ async function tryRemoveDownloadedFile(downloadId) {
 }
 
 function isProbablyVideoDownloadItem(item, attemptedVariant) {
-  if (!item) {
-    return true;
+  if (!item || item.fileSize === 0 || item.exists === false) {
+    return false;
   }
   if (attemptedVariant?.isBlob || attemptedVariant?.isM3u8) {
     return true;
@@ -918,6 +986,7 @@ function mergeCardsBySameTitle(tabId, pageUrl) {
     return card.tabId === tabId
       && card.pageUrl === pageUrl
       && !card.ignored
+      && !retainDownloadTask(card)
       && Array.isArray(card.variants)
       && card.variants.length > 0;
   });
@@ -931,7 +1000,10 @@ function mergeCardsBySameTitle(tabId, pageUrl) {
     if (!titleKey) {
       continue;
     }
-    const key = `${tabId}|${pageUrl}|${titleKey}`;
+    if (card.identityKey) {
+      continue;
+    }
+    const key = `${tabId}|${pageUrl}|${card.mediaKey || ""}|${titleKey}`;
     if (!groups.has(key)) {
       groups.set(key, []);
     }
@@ -980,7 +1052,7 @@ function cleanupForNonPreserve(tabId, pageUrl) {
   for (const [cardId, card] of Object.entries(state.cards)) {
     const sameTab = card.tabId === tabId;
     const samePage = pageUrl ? card.pageUrl === pageUrl : true;
-    if (!sameTab || !samePage) {
+    if ((!sameTab || !samePage) && !retainDownloadTask(card)) {
       delete state.cards[cardId];
     }
   }
@@ -1015,7 +1087,8 @@ async function ingestCandidates(candidates, context) {
       continue;
     }
 
-    const mergeBase = rawCandidate.mergeKey || simplifyUrlForMerge(rawCandidate.url);
+    const mediaKey = simplifyUrlForMerge(rawCandidate.url);
+    const mergeBase = rawCandidate.identityKey || rawCandidate.mergeKey || mediaKey;
     const cardSeed = `${tabId}|${pageUrl}|${mergeBase}`;
     const cardId = `card_${hashString(cardSeed)}`;
 
@@ -1027,6 +1100,8 @@ async function ingestCandidates(candidates, context) {
         pageTitle,
         title: deriveCardTitle(rawCandidate, pageTitle),
         thumbnail: rawCandidate.thumbnail || createDefaultThumbnail(detectedType),
+        identityKey: typeof rawCandidate.identityKey === "string" ? rawCandidate.identityKey : "",
+        mediaKey,
         ignored: false,
         selectedVariantId: "",
         selectionLocked: false,
@@ -1052,6 +1127,14 @@ async function ingestCandidates(candidates, context) {
     card.tabId = tabId;
     card.pageUrl = pageUrl;
     card.pageTitle = pageTitle;
+    if (!card.identityKey && typeof rawCandidate.identityKey === "string") {
+      card.identityKey = rawCandidate.identityKey;
+      changed = true;
+    }
+    if (!card.mediaKey && mediaKey) {
+      card.mediaKey = mediaKey;
+      changed = true;
+    }
     if (shouldReplaceThumbnail(card.thumbnail, rawCandidate.thumbnail)) {
       card.thumbnail = rawCandidate.thumbnail;
       changed = true;
@@ -1070,42 +1153,54 @@ async function ingestCandidates(candidates, context) {
       }
     }
 
-    const variantSeed = detectedType === "m3u8"
-      ? `${rawCandidate.url}|${detectedType}`
-      : `${rawCandidate.url}|${detectedType}|${rawCandidate.source || "unknown"}`;
-    const variantId = `variant_${hashString(variantSeed)}`;
+    const methodCandidates = expandCandidateDownloadMethods(rawCandidate, detectedType);
+    for (const methodCandidate of methodCandidates) {
+      const methodFamily = normalizeMethodFamily(methodCandidate.methodFamily);
+      const variantSeed = detectedType === "m3u8"
+        ? `${methodCandidate.url}|${detectedType}|${methodFamily}`
+        : `${methodCandidate.url}|${detectedType}|${methodFamily}|${methodCandidate.source || "unknown"}`;
+      const variantId = `variant_${hashString(variantSeed)}`;
 
-    const existingVariant = card.variants.find((variant) => variant.id === variantId);
-    if (!existingVariant) {
-      card.variants.push({
-        id: variantId,
-        url: rawCandidate.url,
-        type: detectedType,
-        source: rawCandidate.source || "unknown",
-        label: rawCandidate.label || buildVariantLabel(rawCandidate.url, detectedType),
-        score: Number.isFinite(rawCandidate.score)
-          ? rawCandidate.score
-          : computeQualityScore(rawCandidate.url, detectedType),
-        isBlob: detectedType === "blob",
-        isM3u8: detectedType === "m3u8",
-        detectedAt: Date.now()
-      });
-      changed = true;
-    } else {
-      if (shouldReplaceVariantLabel(existingVariant.label, rawCandidate.label)) {
-        existingVariant.label = rawCandidate.label;
+      const existingVariant = card.variants.find((variant) => variant.id === variantId);
+      if (!existingVariant) {
+        card.variants.push({
+          id: variantId,
+          url: methodCandidate.url,
+          audioUrl: methodCandidate.audioUrl || "",
+          masterUrl: methodCandidate.masterUrl || "",
+          type: detectedType,
+          methodFamily,
+          source: methodCandidate.source || "unknown",
+          label: methodCandidate.label || buildVariantLabel(methodCandidate.url, detectedType),
+          score: Number.isFinite(methodCandidate.score)
+            ? methodCandidate.score
+            : computeQualityScore(methodCandidate.url, detectedType),
+          isBlob: detectedType === "blob",
+          isM3u8: detectedType === "m3u8",
+          detectedAt: Date.now()
+        });
         changed = true;
-      }
-      if (Number.isFinite(rawCandidate.score) && rawCandidate.score > (existingVariant.score || 0)) {
-        existingVariant.score = rawCandidate.score;
-        changed = true;
-      }
-      if (typeof rawCandidate.source === "string" && rawCandidate.source && rawCandidate.source !== existingVariant.source) {
-        existingVariant.source = rawCandidate.source;
-        changed = true;
+      } else {
+        for (const key of ["audioUrl", "masterUrl"]) {
+          if (methodCandidate[key] && existingVariant[key] !== methodCandidate[key]) {
+            existingVariant[key] = methodCandidate[key];
+            changed = true;
+          }
+        }
+        if (shouldReplaceVariantLabel(existingVariant.label, methodCandidate.label)) {
+          existingVariant.label = methodCandidate.label;
+          changed = true;
+        }
+        if (Number.isFinite(methodCandidate.score) && methodCandidate.score > (existingVariant.score || 0)) {
+          existingVariant.score = methodCandidate.score;
+          changed = true;
+        }
+        if (typeof methodCandidate.source === "string" && methodCandidate.source && methodCandidate.source !== existingVariant.source) {
+          existingVariant.source = methodCandidate.source;
+          changed = true;
+        }
       }
     }
-
   }
 
   for (const cardId of touchedCardIds) {
@@ -1147,10 +1242,7 @@ function createDefaultThumbnail(type) {
 }
 
 function getPublicState(activeTabId) {
-  const allCards = Object.values(state.cards).filter((card) => !card.ignored);
-  const filtered = settings.preserveOldPages
-    ? allCards
-    : allCards.filter((card) => card.tabId === activeTabId);
+  const filtered = getVisibleCards(Object.values(state.cards), activeTabId, settings);
 
   const sorted = filtered.sort((a, b) => {
     const aTimestamp = a.status === "completed"
@@ -1173,6 +1265,7 @@ function getPublicState(activeTabId) {
 }
 
 function createCardDebugLog(card, variant) {
+  if (debugLogs.size >= 100) debugLogs.delete(debugLogs.keys().next().value);
   const log = createMediaDebugLog({
     cardId: card.id,
     title: card.title,
@@ -1188,36 +1281,6 @@ function createCardDebugLog(card, variant) {
 
 function getCardDebugLog(card) {
   return card?.debugLogId ? debugLogs.get(card.debugLogId) || null : null;
-}
-
-async function ensureOffscreenDocument() {
-  const offscreenUrl = chrome.runtime.getURL("offscreen.html");
-  if ("getContexts" in chrome.runtime) {
-    const contexts = await chrome.runtime.getContexts({
-      contextTypes: ["OFFSCREEN_DOCUMENT"],
-      documentUrls: [offscreenUrl]
-    });
-    if (contexts.length > 0) {
-      return;
-    }
-  }
-  await chrome.offscreen.createDocument({
-    url: "offscreen.html",
-    reasons: ["WORKERS"],
-    justification: "Run FFmpeg remuxing and post-download validation for HLS downloads."
-  });
-}
-
-async function remuxHlsInOffscreen(job) {
-  await ensureOffscreenDocument();
-  const response = await chrome.runtime.sendMessage({
-    type: "OFFSCREEN_REMUX_HLS",
-    job
-  });
-  if (!response?.ok) {
-    throw new Error(response?.error || "Offscreen remux failed");
-  }
-  return response;
 }
 
 async function setCardStatus(cardId, patch) {
@@ -1255,6 +1318,7 @@ async function setCardStatus(cardId, patch) {
   if (Number.isFinite(patch.completedAt)) {
     card.completedAt = patch.completedAt;
   }
+  if (typeof patch.activeObjectUrl === "string") card.activeObjectUrl = patch.activeObjectUrl;
   if (typeof patch.nativeJobId === "string") {
     card.nativeJobId = patch.nativeJobId;
   }
@@ -1278,7 +1342,7 @@ function findCardByNativeJobId(jobId) {
     return null;
   }
   const cachedCardId = nativeJobs.get(jobId);
-  if (cachedCardId && state.cards[cachedCardId]) {
+  if (cachedCardId && state.cards[cachedCardId]?.nativeJobId === jobId) {
     return state.cards[cachedCardId];
   }
   const card = Object.values(state.cards).find((item) => item.nativeJobId === jobId) || null;
@@ -1367,13 +1431,30 @@ const handleNativePortMessage = createNativePortMessageHandler({
   getStateCards: () => Object.values(state.cards),
   findCardByNativeJobId,
   setCardStatus,
-  requestNativeReport
+  requestNativeReport,
+  fallbackNativeDownload
 });
 
 const setupReleaseController = createSetupReleaseController({
   ensureNativePort,
   isNativeHostConnected
 });
+
+async function fallbackNativeDownload(card, message) {
+  const variantId = card.selectedVariantId;
+  const log = getCardDebugLog(card) || createCardDebugLog(card, getVariantById(card, variantId));
+  addDebugEntry(log, "warn", "native", "Native download failed; using extension fallback", { error: message.error || message.message || "Native disconnected" });
+  nativeJobs.delete(card.nativeJobId);
+  await setCardStatus(card.id, { nativeJobId: "", error: "" });
+  const result = await attemptDownloadVariant(card.id, variantId, "extension-fallback");
+  if (!result.ok) {
+    const attempts = buildDownloadAttemptList(card, variantId);
+    try { await executeDownloadAttempts(card.id, attempts, 1); } catch { /* Attempt already saved the error. */ }
+  } else if (result.pending && card.activeDownloadId) {
+    const entry = activeDownloads.get(card.activeDownloadId);
+    if (entry) entry.attemptQueue = buildDownloadAttemptList(card, variantId);
+  }
+}
 
 async function attemptDownloadVariant(cardId, variantId, reasonLabel) {
   const card = state.cards[cardId];
@@ -1388,11 +1469,15 @@ async function attemptDownloadVariant(cardId, variantId, reasonLabel) {
 
   try {
     card.selectedVariantId = variant.id;
+    const log = getCardDebugLog(card) || createCardDebugLog(card, variant);
+    addDebugEntry(log, "info", "attempt", "Starting download method", { variantId, reasonLabel });
     await setCardStatus(card.id, {
       status: "downloading",
       progress: 2,
       stage: "Preparing selected method",
       activeDownloadId: 0,
+      nativeJobId: "",
+      completedAt: 0,
       error: ""
     });
 
@@ -1400,7 +1485,7 @@ async function attemptDownloadVariant(cardId, variantId, reasonLabel) {
       await downloadBlobVariant(card, variant);
       return { ok: true, pending: false };
     }
-    if (shouldUseNativeDownload(variant)) {
+    if (reasonLabel !== "extension-fallback" && shouldUseNativeDownload(variant)) {
       try {
         await ensureNativePort();
         await startNativeVariant(card, variant);
@@ -1410,6 +1495,7 @@ async function attemptDownloadVariant(cardId, variantId, reasonLabel) {
         await setCardStatus(card.id, {
           status: "downloading",
           progress: 4,
+          nativeJobId: "",
           stage: "Native host unavailable, using extension fallback",
           error: ""
         });
@@ -1424,7 +1510,7 @@ async function attemptDownloadVariant(cardId, variantId, reasonLabel) {
     }
     if (variant.isM3u8) {
       await downloadM3u8Variant(card, variant);
-      return { ok: true, pending: false };
+      return { ok: true, pending: true };
     }
 
     await downloadDirectVariant(card, variant, {
@@ -1433,15 +1519,45 @@ async function attemptDownloadVariant(cardId, variantId, reasonLabel) {
     return { ok: true, pending: true };
   } catch (error) {
     const finalError = error instanceof Error ? error.message : String(error);
+    const log = getCardDebugLog(card);
+    addDebugEntry(log, "error", "attempt", "Download method failed", { variantId, error: finalError });
     await setCardStatus(card.id, {
       status: "error",
       stage: "Selected method failed",
       activeDownloadId: 0,
-      error: finalError
+      error: finalError,
+      debugReport: buildDebugReport({ card: { ...card, status: "error", error: finalError }, log: finalizeDebugLog(log, "failed", { error: finalError }) })
     });
-    await clearRuntimeMemory();
     return { ok: false, error: finalError };
   }
+}
+
+async function executeDownloadAttempts(cardId, attempts, startIndex = 0) {
+  const card = state.cards[cardId];
+  if (!card) {
+    throw new Error("Card not found");
+  }
+  let lastError = "Selected method failed";
+  for (let index = startIndex; index < attempts.length; index += 1) {
+    const attemptVariantId = attempts[index];
+    const result = await attemptDownloadVariant(card.id, attemptVariantId, index === 0 ? "manual" : "auto-switch");
+    if (result.ok) {
+      if (!result.pending) {
+        return;
+      }
+      const activeCard = state.cards[card.id];
+      if (activeCard?.activeDownloadId) {
+        const entry = activeDownloads.get(activeCard.activeDownloadId);
+        if (entry) {
+          entry.attemptQueue = attempts;
+          entry.attemptIndex = index;
+        }
+      }
+      return;
+    }
+    lastError = result.error || lastError;
+  }
+  throw new Error(lastError);
 }
 
 async function startDownload(cardId, variantId) {
@@ -1454,10 +1570,13 @@ async function startDownload(cardId, variantId) {
   if (!variant) {
     throw new Error("Variant not found");
   }
-  const result = await attemptDownloadVariant(card.id, variant.id, "manual");
-  if (!result.ok) {
-    throw new Error(result.error);
-  }
+  if (startingCards.has(cardId) || card.status === "downloading") throw new Error("Download already in progress");
+  startingCards.add(cardId);
+  try {
+    createCardDebugLog(card, variant);
+    const attempts = buildDownloadAttemptList(card, variant.id);
+    await executeDownloadAttempts(card.id, attempts, 0);
+  } finally { startingCards.delete(cardId); }
 }
 
 async function exportCardRecord(card) {
@@ -1488,7 +1607,9 @@ async function downloadDirectVariant(card, variant, context) {
     cardId: card.id,
     totalBytes: 0,
     variantId: variant.id,
-    reasonLabel: typeof context?.reasonLabel === "string" ? context.reasonLabel : "manual"
+    reasonLabel: typeof context?.reasonLabel === "string" ? context.reasonLabel : "manual",
+    attemptQueue: Array.isArray(context?.attemptQueue) ? [...context.attemptQueue] : [variant.id],
+    attemptIndex: Number.isInteger(context?.attemptIndex) ? context.attemptIndex : 0
   });
 
   await setCardStatus(card.id, {
@@ -1506,7 +1627,8 @@ async function downloadBlobVariant(card, variant) {
   const response = await requestBlobDownload(card.tabId, {
     cardId: card.id,
     blobUrl: variant.url,
-    filenameBase
+    filenameBase,
+    methodFamily: getVariantMethodFamily(variant)
   });
 
   if (!response || response.ok !== true) {
@@ -1516,246 +1638,6 @@ async function downloadBlobVariant(card, variant) {
   await setCardStatus(card.id, {
     downloadMode: response.mode || "blob-source-copy"
   });
-}
-
-function arrayBufferToBase64(arrayBuffer) {
-  const bytes = new Uint8Array(arrayBuffer);
-  let binary = "";
-  const step = 0x8000;
-  for (let index = 0; index < bytes.length; index += step) {
-    binary += String.fromCharCode(...bytes.subarray(index, index + step));
-  }
-  return btoa(binary);
-}
-
-async function sendToTabWithAck(tabId, type, payload) {
-  const response = await chrome.tabs.sendMessage(tabId, {
-    type,
-    payload
-  });
-  if (!response || response.ok !== true) {
-    throw new Error(response?.error || `Tab handler failed for ${type}`);
-  }
-  return response;
-}
-
-async function startM3u8Transfer(tabId, transferId, filename, mimeType) {
-  await sendToTabWithAck(tabId, "START_M3U8_SAVE", {
-    transferId,
-    filename,
-    mimeType
-  });
-}
-
-async function appendM3u8TransferChunk(tabId, transferId, chunkBase64) {
-  await sendToTabWithAck(tabId, "APPEND_M3U8_CHUNK", {
-    transferId,
-    chunkBase64
-  });
-}
-
-async function finishM3u8Transfer(tabId, transferId) {
-  await sendToTabWithAck(tabId, "FINISH_M3U8_SAVE", {
-    transferId
-  });
-}
-
-async function abortM3u8Transfer(tabId, transferId) {
-  try {
-    await sendToTabWithAck(tabId, "ABORT_M3U8_SAVE", { transferId });
-  } catch {
-    // Ignore abort notification failure.
-  }
-}
-
-async function sendArrayBufferToM3u8Transfer(tabId, transferId, arrayBuffer) {
-  const base64 = arrayBufferToBase64(arrayBuffer);
-  for (let offset = 0; offset < base64.length; offset += TRANSFER_BASE64_CHUNK_SIZE) {
-    const chunkBase64 = base64.slice(offset, offset + TRANSFER_BASE64_CHUNK_SIZE);
-    await appendM3u8TransferChunk(tabId, transferId, chunkBase64);
-  }
-}
-
-function parseAttributeList(line) {
-  const attributes = {};
-  const colonIndex = line.indexOf(":");
-  if (colonIndex < 0) {
-    return attributes;
-  }
-  const attrText = line.slice(colonIndex + 1);
-  const pattern = /([A-Z0-9-]+)=("(?:[^"\\]|\\.)*"|[^,]*)/gi;
-  let match = pattern.exec(attrText);
-  while (match) {
-    let value = match[2].trim();
-    if (value.startsWith("\"") && value.endsWith("\"")) {
-      value = value.slice(1, -1);
-    }
-    attributes[match[1].toUpperCase()] = value;
-    match = pattern.exec(attrText);
-  }
-  return attributes;
-}
-
-function parseMasterPlaylist(text, baseUrl) {
-  const lines = text.split(/\r?\n/);
-  const audioMediaGroups = new Map();
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (!line.startsWith("#EXT-X-MEDIA")) {
-      continue;
-    }
-    const attrs = parseAttributeList(line);
-    if ((attrs.TYPE || "").toUpperCase() !== "AUDIO") {
-      continue;
-    }
-    const groupId = attrs["GROUP-ID"] || "";
-    if (!groupId) {
-      continue;
-    }
-    const uri = attrs.URI ? new URL(attrs.URI, baseUrl).href : "";
-    if (!audioMediaGroups.has(groupId)) {
-      audioMediaGroups.set(groupId, []);
-    }
-    if (uri) {
-      audioMediaGroups.get(groupId).push(uri);
-    }
-  }
-
-  const options = [];
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i].trim();
-    if (!line.startsWith("#EXT-X-STREAM-INF")) {
-      continue;
-    }
-    const attrs = parseAttributeList(line);
-    let uri = "";
-    for (let j = i + 1; j < lines.length; j += 1) {
-      const candidate = lines[j].trim();
-      if (!candidate || candidate.startsWith("#")) {
-        continue;
-      }
-      uri = candidate;
-      break;
-    }
-    if (!uri) {
-      continue;
-    }
-
-    const resolutionRaw = attrs.RESOLUTION || "";
-    const resolutionMatch = resolutionRaw.match(/^(\d+)[x*](\d+)$/i);
-    const resolutionWidth = resolutionMatch ? Number(resolutionMatch[1]) || 0 : 0;
-    const resolutionHeight = resolutionMatch ? Number(resolutionMatch[2]) || 0 : 0;
-    const bandwidth = Number(attrs.BANDWIDTH || attrs["AVERAGE-BANDWIDTH"] || 0);
-    const codecs = String(attrs.CODECS || "").toLowerCase();
-    const score = resolutionHeight * 10000 + resolutionWidth + bandwidth / 1000;
-    const audioGroupId = attrs.AUDIO || "";
-    const linkedAudioUris = audioGroupId ? (audioMediaGroups.get(audioGroupId) || []) : [];
-    const hasAudioCodec = /(mp4a|aac|ac-3|ec-3|opus|vorbis|flac|alac)/i.test(codecs);
-    const hasVideoCodec = /(avc1|avc3|hev1|hvc1|vp8|vp9|vp09|av01|theora)/i.test(codecs);
-
-    options.push({
-      url: new URL(uri, baseUrl).href,
-      score,
-      resolutionWidth,
-      resolutionHeight,
-      bandwidth,
-      codecs,
-      hasAudioCodec,
-      hasVideoCodec,
-      audioGroupId,
-      hasSeparateAudio: linkedAudioUris.length > 0
-    });
-  }
-  return options;
-}
-
-function getMasterOptionAudioRank(option) {
-  if (!option || typeof option !== "object") {
-    return -10;
-  }
-  if (option.hasSeparateAudio) {
-    return -2;
-  }
-  if (option.hasAudioCodec) {
-    return 3;
-  }
-  if (!option.codecs) {
-    return 1;
-  }
-  if (option.hasVideoCodec) {
-    return 0;
-  }
-  return 1;
-}
-
-function choosePreferredMasterOption(options) {
-  if (!Array.isArray(options) || options.length === 0) {
-    return null;
-  }
-  return [...options].sort((a, b) => {
-    const audioRankDiff = getMasterOptionAudioRank(b) - getMasterOptionAudioRank(a);
-    if (audioRankDiff !== 0) {
-      return audioRankDiff;
-    }
-    if ((b.score || 0) !== (a.score || 0)) {
-      return (b.score || 0) - (a.score || 0);
-    }
-    return (b.bandwidth || 0) - (a.bandwidth || 0);
-  })[0];
-}
-
-function parseMediaPlaylist(text, baseUrl) {
-  const lines = text.split(/\r?\n/);
-  const segments = [];
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (!line) {
-      continue;
-    }
-    if (line.startsWith("#EXT-X-MAP")) {
-      const attrs = parseAttributeList(line);
-      if (attrs.URI) {
-        segments.push(new URL(attrs.URI, baseUrl).href);
-      }
-      continue;
-    }
-    if (line.startsWith("#")) {
-      continue;
-    }
-    segments.push(new URL(line, baseUrl).href);
-  }
-  return segments;
-}
-
-function guessExtFromSegment(segmentUrl) {
-  try {
-    const ext = new URL(segmentUrl).pathname.split(".").pop()?.toLowerCase() || "";
-    if (ext === "m4s" || ext === "cmfv" || ext === "mp4") {
-      return "mp4";
-    }
-    if (ext === "webm") {
-      return "webm";
-    }
-    if (ext === "mov") {
-      return "mov";
-    }
-  } catch {
-    return "mp4";
-  }
-  return "ts";
-}
-
-function buildMasterVariantLabel(option) {
-  const parts = [];
-  if (option.resolutionWidth && option.resolutionHeight) {
-    parts.push(`${option.resolutionWidth}*${option.resolutionHeight}`);
-  } else {
-    parts.push("Auto");
-  }
-  if (option.bandwidth) {
-    parts.push(`${Math.round(option.bandwidth / 1000)}k`);
-  }
-  return `${parts.join(" ")} (m3u8)`;
 }
 
 async function expandM3u8Candidates(candidates) {
@@ -1785,39 +1667,31 @@ async function discoverMasterVariants(candidate) {
   const now = Date.now();
   const cached = m3u8MasterCache.get(candidate.url);
   if (cached && now - cached.cachedAt < M3U8_CACHE_TTL_MS) {
-    return cached.variants;
+    return expandMasterOptions(candidate, cached.options, cached.baseUrl, simplifyUrlForMerge(candidate.url));
   }
 
   try {
-    let text = await fetchText(candidate.url);
-    let baseUrl = candidate.url;
+    const fetched = await fetchPlaylist(candidate.url, { retries: 1, timeoutMs: 8000 });
+    let text = fetched.text;
+    let baseUrl = fetched.url;
 
     if (!/^#EXT-X-STREAM-INF/im.test(text)) {
       const guessed = await discoverMasterFromGuesses(candidate.url);
       if (!guessed) {
-        m3u8MasterCache.set(candidate.url, { cachedAt: now, variants: [] });
+        m3u8MasterCache.set(candidate.url, { cachedAt: now, options: [], baseUrl: candidate.url });
         return [];
       }
       text = guessed.text;
       baseUrl = guessed.url;
     }
 
-    const options = parseMasterPlaylist(text, baseUrl).sort((a, b) => b.score - a.score);
+    const options = parseMasterPlaylistModule(text, baseUrl).sort((a, b) => b.score - a.score);
 
-    const variants = options.map((option) => ({
-      ...candidate,
-      url: option.url,
-      type: "m3u8",
-      source: `${candidate.source || "unknown"}:master`,
-      label: buildMasterVariantLabelModule(option),
-      score: option.score,
-      mergeKey: candidate.mergeKey || simplifyUrlForMerge(candidate.url)
-    }));
-
-    m3u8MasterCache.set(candidate.url, { cachedAt: now, variants });
-    return variants;
+    m3u8MasterCache.set(candidate.url, { cachedAt: now, options, baseUrl });
+    if (m3u8MasterCache.size > 200) m3u8MasterCache.delete(m3u8MasterCache.keys().next().value);
+    return expandMasterOptions(candidate, options, baseUrl, simplifyUrlForMerge(candidate.url));
   } catch {
-    m3u8MasterCache.set(candidate.url, { cachedAt: now, variants: [] });
+    m3u8MasterCache.set(candidate.url, { cachedAt: now, options: [], baseUrl: candidate.url });
     return [];
   }
 }
@@ -1864,260 +1738,10 @@ async function discoverMasterFromGuesses(rawUrl) {
   return null;
 }
 
-async function downloadM3u8Variant(card, variant) {
-  const debugLog = createCardDebugLog(card, variant);
-  const logFetch = createRetryFetchLogger(debugLog, addDebugEntry);
-
-  await setCardStatus(card.id, {
-    status: "downloading",
-    progress: 5,
-    stage: "Fetching playlist",
-    downloadMode: "remuxing-source",
-    debugLogId: debugLog.id,
-    error: ""
-  });
-
-  try {
-    const masterText = await fetchTextWithRetry(variant.url, {
-      logger: logFetch,
-      stage: "playlist fetch",
-      retries: 3
-    });
-    addDebugEntry(debugLog, "info", "playlist", "Fetched initial HLS playlist", {
-      url: variant.url,
-      isMaster: /^#EXT-X-STREAM-INF/im.test(masterText)
-    });
-
-    if (/^#EXT-X-KEY:(?!.*METHOD=NONE)/im.test(masterText)) {
-      throw new Error("Encrypted m3u8 is not supported.");
-    }
-
-    let videoPlaylistUrl = variant.url;
-    let videoPlaylistText = masterText;
-    let audioPlaylistUrl = "";
-    let audioPlaylistText = "";
-    let selectedMasterOption = null;
-
-    if (/^#EXT-X-STREAM-INF/im.test(masterText)) {
-      const options = parseMasterPlaylistModule(masterText, variant.url);
-      if (options.length === 0) {
-        throw new Error("Invalid master m3u8 playlist");
-      }
-      selectedMasterOption = choosePreferredMasterOptionModule(options);
-      if (!selectedMasterOption) {
-        throw new Error("Unable to choose HLS stream");
-      }
-
-      const audioTrack = chooseAudioTrack(selectedMasterOption.audioTracks);
-      videoPlaylistUrl = selectedMasterOption.url;
-      audioPlaylistUrl = audioTrack?.uri || "";
-
-      addDebugEntry(debugLog, "info", "playlist", "Selected master variant", {
-        resolution: selectedMasterOption.resolutionHeight || 0,
-        codecs: selectedMasterOption.codecs,
-        audioGroup: selectedMasterOption.audioGroupId || "",
-        hasSeparateAudio: selectedMasterOption.hasSeparateAudio,
-        audioTrack: audioTrack?.language || audioTrack?.name || ""
-      });
-
-      await setCardStatus(card.id, {
-        status: "downloading",
-        progress: 12,
-        stage: selectedMasterOption.hasSeparateAudio
-          ? "Selected split audio/video HLS stream"
-          : "Selected muxed HLS stream",
-        error: ""
-      });
-
-      videoPlaylistText = await fetchTextWithRetry(videoPlaylistUrl, {
-        logger: logFetch,
-        stage: "video playlist fetch",
-        retries: 3
-      });
-      if (audioPlaylistUrl) {
-        audioPlaylistText = await fetchTextWithRetry(audioPlaylistUrl, {
-          logger: logFetch,
-          stage: "audio playlist fetch",
-          retries: 3
-        });
-      }
-    }
-
-    if (/^#EXT-X-KEY:(?!.*METHOD=NONE)/im.test(videoPlaylistText) || /^#EXT-X-KEY:(?!.*METHOD=NONE)/im.test(audioPlaylistText)) {
-      throw new Error("Encrypted media playlist is not supported.");
-    }
-
-    const videoPlaylistInfo = parseMediaPlaylistModule(videoPlaylistText, videoPlaylistUrl);
-    const audioPlaylistInfo = audioPlaylistText ? parseMediaPlaylistModule(audioPlaylistText, audioPlaylistUrl) : null;
-    if (videoPlaylistInfo.segments.length === 0) {
-      throw new Error("No media segments found in HLS video playlist");
-    }
-    if (audioPlaylistInfo && audioPlaylistInfo.segments.length === 0) {
-      throw new Error("No media segments found in HLS audio playlist");
-    }
-
-    setDebugSummary(debugLog, {
-      playlistType: selectedMasterOption ? "master" : "media",
-      codecs: selectedMasterOption?.codecs || "",
-      videoSegmentExtensions: videoPlaylistInfo.segmentExtensions,
-      videoInitSegment: Boolean(videoPlaylistInfo.initSegment),
-      audioGroup: selectedMasterOption?.audioGroupId || "",
-      hasSeparateAudio: Boolean(audioPlaylistInfo),
-      audioSegmentExtensions: audioPlaylistInfo?.segmentExtensions || [],
-      audioInitSegment: Boolean(audioPlaylistInfo?.initSegment),
-      finalizeMode: "ffmpeg-copy-faststart"
-    });
-
-    await setCardStatus(card.id, {
-      status: "downloading",
-      progress: 22,
-      stage: "Downloading HLS segments with retry",
-      error: ""
-    });
-
-    const videoResources = await downloadMediaPlaylistResources(videoPlaylistInfo, {
-      logger: logFetch,
-      stagePrefix: "video",
-      retries: 3
-    });
-    const audioResources = audioPlaylistInfo
-      ? await downloadMediaPlaylistResources(audioPlaylistInfo, {
-          logger: logFetch,
-          stagePrefix: "audio",
-          retries: 3
-        })
-      : [];
-
-    const outputExt = "mp4";
-    const filename = buildFileName(card, variant, outputExt);
-    const remuxJob = buildRemuxJob({
-      videoPlaylistText,
-      videoPlaylistInfo,
-      videoResources,
-      audioPlaylistText,
-      audioPlaylistInfo,
-      audioResources,
-      outputFileName: filename
-    });
-    remuxJob.expectedDuration = Math.max(videoPlaylistInfo.totalDuration || 0, audioPlaylistInfo?.totalDuration || 0);
-
-    await setCardStatus(card.id, {
-      status: "downloading",
-      progress: 68,
-      stage: audioPlaylistInfo ? "Remuxing video/audio and moving moov to front" : "Remuxing HLS and moving moov to front",
-      error: ""
-    });
-
-    let remuxResult = null;
-    let remuxError = null;
-    for (let remuxAttempt = 1; remuxAttempt <= 2; remuxAttempt += 1) {
-      try {
-        addDebugEntry(debugLog, "info", "remux", "Starting FFmpeg remux", { remuxAttempt });
-        remuxResult = await remuxHlsInOffscreen(remuxJob);
-        remuxError = null;
-        break;
-      } catch (error) {
-        remuxError = error instanceof Error ? error : new Error(String(error));
-        addDebugEntry(debugLog, "warn", "remux", "Remux attempt failed", {
-          remuxAttempt,
-          error: remuxError.message
-        });
-      }
-    }
-    if (remuxError || !remuxResult) {
-      throw remuxError || new Error("Remux failed");
-    }
-    if (!remuxResult.validation?.ok) {
-      throw new Error("Finalized media validation failed");
-    }
-
-    addDebugEntry(debugLog, "info", "validation", "Finalized media validated", remuxResult.validation);
-
-    const transferId = `media_${card.id}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-    let transferStarted = false;
-    try {
-      await setCardStatus(card.id, {
-        status: "downloading",
-        progress: 90,
-        stage: "Saving finalized MP4",
-        activeDownloadId: 0,
-        lastValidation: remuxResult.validation,
-        error: ""
-      });
-      let saveError = null;
-      for (let saveAttempt = 1; saveAttempt <= 2; saveAttempt += 1) {
-        try {
-          await startBinaryTransfer(card.tabId, transferId, filename, remuxResult.mimeType || "video/mp4");
-          transferStarted = true;
-          await sendArrayBufferToTransfer(card.tabId, transferId, remuxResult.arrayBuffer, TRANSFER_BASE64_CHUNK_SIZE);
-          await finishBinaryTransfer(card.tabId, transferId);
-          saveError = null;
-          break;
-        } catch (error) {
-          saveError = error instanceof Error ? error : new Error(String(error));
-          addDebugEntry(debugLog, "warn", "save", "Save attempt failed", {
-            saveAttempt,
-            error: saveError.message
-          });
-          if (transferStarted) {
-            await abortBinaryTransfer(card.tabId, transferId);
-            transferStarted = false;
-          }
-        }
-      }
-      if (saveError) {
-        throw saveError;
-      }
-    } catch (transferError) {
-      if (transferStarted) {
-        await abortBinaryTransfer(card.tabId, transferId);
-      }
-      throw transferError;
-    }
-
-    await setCardStatus(card.id, {
-      status: "completed",
-      progress: 100,
-      stage: "Completed",
-      downloadMode: audioPlaylistInfo ? "remuxed-source-av" : "remuxed-source",
-      activeDownloadId: 0,
-      error: "",
-      lastValidation: remuxResult.validation,
-      debugReport: buildDebugReport({
-        card,
-        log: finalizeDebugLog(debugLog, "completed", {
-          fileName: filename,
-          validation: remuxResult.validation,
-          outputContainer: remuxResult.container,
-          saveMode: "tab-binary-transfer"
-        })
-      }),
-      completedAt: Date.now()
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const report = buildDebugReport({
-      card,
-      log: finalizeDebugLog(debugLog, "failed", {
-        error: message
-      }),
-      extraNotes: [
-        "This report can be exported from the popup for failed or degraded downloads."
-      ]
-    });
-    await setCardStatus(card.id, {
-      debugReport: report
-    });
-    throw error;
-  }
-}
+const downloadM3u8Variant = createHlsDownloader({ createCardDebugLog, getCardDebugLog, setCardStatus, buildFileName, activeDownloads });
 
 async function fetchText(url) {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
-  }
-  return response.text();
+  return fetchTextWithRetry(url, { retries: 1, timeoutMs: 8000 });
 }
 
 async function ignoreCard(cardId) {
@@ -2154,6 +1778,7 @@ async function updateVariantSelection(cardId, variantId) {
   if (!card) {
     return;
   }
+  if (card.status === "downloading") return;
   if (!card.variants.some((variant) => variant.id === variantId)) {
     return;
   }
@@ -2166,6 +1791,7 @@ async function updateVariantSelection(cardId, variantId) {
 
 async function clearAllCache(keepSettings) {
   await ensureInitialized();
+  if (Object.values(state.cards).some((card) => card.status === "downloading")) throw new Error("Wait for active downloads before clearing cache");
   const retainedSettings = keepSettings ? structuredClone(settings) : structuredClone(DEFAULT_SETTINGS);
   activeDownloads.clear();
   m3u8MasterCache.clear();
@@ -2208,6 +1834,7 @@ async function updateSettings(nextSettings) {
 
   let changed = false;
   for (const [cardId, card] of Object.entries(state.cards)) {
+    if (retainDownloadTask(card)) continue;
     const beforeCount = card.variants.length;
     card.variants = card.variants.filter((variant) => shouldAcceptType(variant.type));
 
@@ -2264,7 +1891,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   }
   let changed = false;
   for (const [cardId, card] of Object.entries(state.cards)) {
-    if (card.tabId === tabId) {
+    if (card.tabId === tabId && !retainDownloadTask(card)) {
       delete state.cards[cardId];
       changed = true;
     }
@@ -2282,11 +1909,13 @@ chrome.webRequest.onCompleted.addListener(
       if (!Number.isInteger(details.tabId) || details.tabId < 0) {
         return;
       }
-      const type = detectTypeFromUrl(details.url);
+      const meta = networkResponseMeta.get(details.url);
+      const mime = (meta?.contentType || "").split(";")[0].trim().toLowerCase();
+      const mimeType = ({ "application/vnd.apple.mpegurl": "m3u8", "application/x-mpegurl": "m3u8", "video/mp4": "mp4", "video/webm": "webm", "video/quicktime": "mov" })[mime];
+      const type = mimeType || detectTypeFromUrl(details.url);
       if (!type || !shouldAcceptType(type)) {
         return;
       }
-      const meta = networkResponseMeta.get(details.url);
       if (!shouldAcceptNetworkCandidate(details.url, type, meta)) {
         return;
       }
@@ -2327,7 +1956,11 @@ chrome.downloads.onChanged.addListener(async (delta) => {
         cardId: card.id,
         totalBytes: 0,
         variantId: card.selectedVariantId,
-        reasonLabel: "resume"
+        reasonLabel: "resume",
+        objectUrl: card.activeObjectUrl,
+        downloadMode: card.downloadMode,
+        attemptQueue: buildDownloadAttemptList(card, card.selectedVariantId),
+        attemptIndex: 0
       };
       activeDownloads.set(delta.id, entry);
     }
@@ -2350,6 +1983,9 @@ chrome.downloads.onChanged.addListener(async (delta) => {
     });
   }
 
+  if (["complete", "interrupted"].includes(delta.state?.current)) {
+    await releaseRemuxUrl(entry.objectUrl);
+  }
   if (delta.state?.current === "complete") {
     let item = null;
     try {
@@ -2362,22 +1998,35 @@ chrome.downloads.onChanged.addListener(async (delta) => {
     const attemptedVariant = card ? getVariantById(card, entry.variantId) : null;
     const isVideo = isProbablyVideoDownloadItem(item, attemptedVariant);
     if (!isVideo) {
+      await tryRemoveDownloadedFile(delta.id);
+      activeDownloads.delete(delta.id);
+      const fallbackVariantId = entry.attemptQueue?.[entry.attemptIndex + 1];
+      if (fallbackVariantId) {
+        try {
+          await executeDownloadAttempts(entry.cardId, entry.attemptQueue, entry.attemptIndex + 1);
+          return;
+        } catch {
+          // Fall through to final error below.
+        }
+      }
       await setCardStatus(entry.cardId, {
         status: "error",
         stage: "Selected method returned a non-video file",
         activeDownloadId: 0,
         error: "The selected download method completed, but the saved file was not a video."
       });
-      await tryRemoveDownloadedFile(delta.id);
-      activeDownloads.delete(delta.id);
       return;
     }
 
+    const completedLog = card ? getCardDebugLog(card) : null;
+    addDebugEntry(completedLog, "info", "save", "Browser confirmed download completion", { downloadId: delta.id, fileSize: item?.fileSize });
     await setCardStatus(entry.cardId, {
+      debugReport: buildDebugReport({ card: { ...card, status: "completed", stage: "Completed", error: "" }, log: finalizeDebugLog(completedLog, "completed") }),
       status: "completed",
       progress: 100,
       stage: "Completed",
-      downloadMode: "direct-copy",
+      downloadMode: entry.downloadMode || "direct-copy",
+      activeObjectUrl: "",
       error: "",
       activeDownloadId: 0,
       completedAt: Date.now()
@@ -2388,6 +2037,19 @@ chrome.downloads.onChanged.addListener(async (delta) => {
 
   if (delta.state?.current === "interrupted") {
     activeDownloads.delete(delta.id);
+    if (delta.error?.current === "USER_CANCELED") {
+      await setCardStatus(entry.cardId, { status: "available", progress: 0, stage: "Download cancelled", activeDownloadId: 0, activeObjectUrl: "", error: "" });
+      return;
+    }
+    const fallbackVariantId = entry.attemptQueue?.[entry.attemptIndex + 1];
+    if (fallbackVariantId) {
+      try {
+        await executeDownloadAttempts(entry.cardId, entry.attemptQueue, entry.attemptIndex + 1);
+        return;
+      } catch {
+        // Fall through to final interrupted state below.
+      }
+    }
     await setCardStatus(entry.cardId, {
       status: "error",
       stage: "Selected method interrupted",
@@ -2398,8 +2060,9 @@ chrome.downloads.onChanged.addListener(async (delta) => {
   }
 });
 
+let nativeEventQueue = Promise.resolve();
 addNativePortListener((message) => {
-  handleNativePortMessage(message).catch(() => {});
+  nativeEventQueue = nativeEventQueue.then(() => ensureInitialized()).then(() => handleNativePortMessage(message)).catch(console.error);
 });
 
 const handleRuntimeMessage = createRuntimeMessageHandler({
@@ -2421,6 +2084,7 @@ const handleRuntimeMessage = createRuntimeMessageHandler({
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.target === "offscreen" || message?.type === "STATE_UPDATED") return false;
   handleRuntimeMessage(message, sender)
     .then((result) => sendResponse(result))
     .catch((error) => {
@@ -2436,12 +2100,11 @@ import { createMediaDebugLog, addDebugEntry, finalizeDebugLog, setDebugSummary }
 import { buildDebugReport } from "./core/debug/export-debug-report.js";
 import { applyDownloadHistory, normalizeDownloadHistoryUrl, recordDownloadedUrl } from "./core/history/download-history.js";
 import { parseMasterPlaylist as parseMasterPlaylistModule, choosePreferredMasterOption as choosePreferredMasterOptionModule, chooseAudioTrack, buildMasterVariantLabel as buildMasterVariantLabelModule } from "./core/hls/parse-master.js";
-import { parseMediaPlaylist as parseMediaPlaylistModule, guessExtFromPlaylist } from "./core/hls/parse-media.js";
-import { fetchTextWithRetry, downloadMediaPlaylistResources, createRetryFetchLogger } from "./core/hls/download-segments.js";
-import { buildRemuxJob } from "./core/hls/merge-renditions.js";
-import { startBinaryTransfer, sendArrayBufferToTransfer, finishBinaryTransfer, abortBinaryTransfer } from "./core/files/save-file.js";
+import { fetchTextWithRetry } from "./core/hls/download-segments.js";
+import { releaseRemuxUrl } from "./core/files/save-remux.js";
 import { startDirectBrowserDownload } from "./core/download-direct.js";
 import { requestBlobDownload } from "./core/download-blob.js";
+import { expandCandidateDownloadMethods, getVariantMethodFamily, normalizeMethodFamily } from "./core/download-methods.js";
 import { collectRequestContext } from "./extension/background/request-context.js";
 import { shouldUseNativeDownload, getNativeDownloadMode } from "./extension/background/job-dispatcher.js";
 import { exportCardRecord as exportCardRecordFile } from "./extension/background/export-record.js";
@@ -2451,3 +2114,12 @@ import { createSetupReleaseController } from "./extension/background/setup-relea
 import { createRuntimeMessageHandler } from "./extension/background/runtime-router.js";
 import { buildNativeJob } from "./extension/native/normalize-job.js";
 import { EVENT_TYPES, REQUEST_TYPES, createRequestId } from "./extension/native/protocol.js";
+
+import { createHlsDownloader } from "./extension/background/hls-pipeline.js";
+
+import { fetchPlaylist } from "./core/hls/fetch-playlist.js";
+
+import { expandMasterOptions } from "./core/hls/expand-master.js";
+
+import { retainDownloadTask } from "./core/history/retain-download-task.js";
+import { getVisibleCards } from "./extension/background/visible-cards.js";

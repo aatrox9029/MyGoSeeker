@@ -50,6 +50,7 @@ function parseAudioGroups(lines, baseUrl) {
 }
 
 export function parseMasterPlaylist(text, baseUrl) {
+  if (!/^\s*#EXTM3U(?:\s|$)/.test(text)) throw new Error("Invalid HLS playlist header");
   const lines = text.split(/\r?\n/);
   const audioGroups = parseAudioGroups(lines, baseUrl);
   const options = [];
@@ -74,7 +75,7 @@ export function parseMasterPlaylist(text, baseUrl) {
     }
 
     const resolutionRaw = attrs.RESOLUTION || "";
-  const resolutionMatch = resolutionRaw.match(/^(\d+)[x*](\d+)$/i);
+    const resolutionMatch = resolutionRaw.match(/^(\d+)[x*](\d+)$/i);
     const resolutionWidth = resolutionMatch ? Number(resolutionMatch[1]) || 0 : 0;
     const resolutionHeight = resolutionMatch ? Number(resolutionMatch[2]) || 0 : 0;
     const bandwidth = Number(attrs.BANDWIDTH || attrs["AVERAGE-BANDWIDTH"] || 0);

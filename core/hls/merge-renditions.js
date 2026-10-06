@@ -15,7 +15,7 @@ function fileNameForResource(prefix, kind, index, sourceUrl, fallbackExt) {
     }
   })();
   if (kind === "init") {
-    return `${prefix}-init.${ext}`;
+    return `${prefix}-init-${index}.${ext}`;
   }
   return `${prefix}-segment-${String(index).padStart(5, "0")}.${ext}`;
 }
@@ -23,29 +23,31 @@ function fileNameForResource(prefix, kind, index, sourceUrl, fallbackExt) {
 function rewritePlaylistText(originalText, resources, fallbackExt, prefix) {
   const lines = originalText.split(/\r?\n/);
   let segmentIndex = 0;
-  let initDone = false;
+  let initIndex = 0;
+  const initResources = resources.filter((item) => item.kind === "init");
+  const segmentResources = resources.filter((item) => item.kind === "segment");
   return lines.map((rawLine) => {
     const line = rawLine.trim();
     if (!line) {
       return rawLine;
     }
     if (line.startsWith("#EXT-X-MAP")) {
-      const initResource = resources.find((item) => item.kind === "init");
-      initDone = true;
+      const initResource = initResources[initIndex++];
       if (!initResource) {
         return rawLine;
       }
-      return `#EXT-X-MAP:URI="${fileNameForResource(prefix, "init", 0, initResource.sourceUrl, fallbackExt)}"`;
+      return `#EXT-X-MAP:URI="${initResource.fileName}"`;
     }
+    if (line.startsWith("#EXT-X-BYTERANGE:") || line.startsWith("#EXT-X-PART:") || line.startsWith("#EXT-X-PRELOAD-HINT:")) return "";
     if (line.startsWith("#")) {
       return rawLine;
     }
-    const resource = resources.filter((item) => item.kind === "segment")[segmentIndex];
+    const resource = segmentResources[segmentIndex];
     segmentIndex += 1;
     return resource
       ? fileNameForResource(prefix, "segment", resource.index || 0, resource.sourceUrl, fallbackExt)
       : rawLine;
-  }).concat(initDone ? [] : []).join("\n");
+  }).join("\n");
 }
 
 function normalizeResources(resources, fallbackExt, prefix) {

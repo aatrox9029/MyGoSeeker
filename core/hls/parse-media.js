@@ -1,4 +1,5 @@
 import { parseAttributeList } from "./parse-master.js";
+import { parseByteRange } from "./parse-byte-range.js";
 
 function buildSegmentExtensionSet(segments) {
   return [...new Set(
@@ -15,8 +16,12 @@ function buildSegmentExtensionSet(segments) {
 }
 
 export function parseMediaPlaylist(text, baseUrl) {
+  if (!/^\s*#EXTM3U(?:\s|$)/.test(text)) throw new Error("Invalid HLS playlist header");
   const lines = text.split(/\r?\n/);
   const segments = [];
+  const initSegments = [];
+  let pendingRange = "";
+  let encrypted = false;
   let currentDuration = 0;
   let currentTitle = "";
   let initSegment = null;
@@ -50,17 +55,26 @@ export function parseMediaPlaylist(text, baseUrl) {
     if (line.startsWith("#EXT-X-KEY")) {
       const attrs = parseAttributeList(line);
       keyMethod = attrs.METHOD || keyMethod;
+      if (keyMethod !== "NONE") encrypted = true;
       continue;
     }
     if (line.startsWith("#EXT-X-MAP")) {
       const attrs = parseAttributeList(line);
       if (attrs.URI) {
         initSegment = {
-          url: new URL(attrs.URI, baseUrl).href
+          url: new URL(attrs.URI, baseUrl).href,
+          index: initSegments.length
         };
+        if (attrs.BYTERANGE) initSegment.byteRange = parseByteRange(attrs.BYTERANGE, initSegments.at(-1), initSegment.url);
+        initSegments.push(initSegment);
       }
       continue;
     }
+    if (line.startsWith("#EXT-X-BYTERANGE:")) {
+      pendingRange = line.slice("#EXT-X-BYTERANGE:".length);
+      continue;
+    }
+    if (line.startsWith("#EXT-X-GAP")) throw new Error("HLS playlist contains a missing segment");
     if (line.startsWith("#EXTINF")) {
       const value = line.slice("#EXTINF:".length).split(",")[0] || "0";
       currentDuration = Number(value);
@@ -71,11 +85,14 @@ export function parseMediaPlaylist(text, baseUrl) {
       continue;
     }
 
-    segments.push({
+    const segment = {
       url: new URL(line, baseUrl).href,
       duration: Number.isFinite(currentDuration) ? currentDuration : 0,
       title: currentTitle
-    });
+    };
+    if (pendingRange) segment.byteRange = parseByteRange(pendingRange, segments.at(-1), segment.url);
+    segments.push(segment);
+    pendingRange = "";
     currentDuration = 0;
     currentTitle = "";
   }
@@ -83,6 +100,7 @@ export function parseMediaPlaylist(text, baseUrl) {
   return {
     baseUrl,
     initSegment,
+    initSegments,
     segments,
     totalDuration: segments.reduce((total, item) => total + (item.duration || 0), 0),
     targetDuration,
@@ -90,6 +108,7 @@ export function parseMediaPlaylist(text, baseUrl) {
     mediaSequence,
     isEndList,
     keyMethod,
+    encrypted,
     segmentExtensions: buildSegmentExtensionSet(segments)
   };
 }

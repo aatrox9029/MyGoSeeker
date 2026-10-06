@@ -1,61 +1,59 @@
-<p align="center">
-  <img width="128" height="128" alt="icon" src="https://github.com/user-attachments/assets/30a4b012-29f8-4c2e-abb9-851c2e0df85c" />
-</p>
+# MyGoSeeker
 
-<h1 align="center">MyGoSeeker</h1>
+Detect and download accessible video sources from Chromium pages.
 
-<p align="center">
-  A browser extension and native helper for detecting, organizing, and downloading videos with a reliability-first workflow.
-</p>
-
-<p align="center">
-  Built for practical downloading, HLS handling, browser integration, and clear install/release packaging.
-</p>
-
-## Overview
-
-MyGoSeeker combines:
-
-- a browser extension for detection, UI, page context, and save orchestration
-- a Go native host for direct downloads, HLS remuxing, validation, and selective fallback handling
-- a release workflow that produces a packaged plugin plus `setup.exe`
-
-The project is designed to keep browser-specific work inside the extension while moving failure-prone download and remux tasks into a native helper.
+MyGoSeeker is a Chromium extension focused on detecting videos on the current page, separating them into clear download cards, and giving you practical download choices without forcing premium plans or hidden limits.
 
 ## Highlights
 
-- Detects downloadable media from the current page
-- Supports direct file downloads and HLS workflows
-- Uses browser-side FFmpeg wasm for offscreen remux/finalization where needed
-- Uses a Go native host for direct download, native HLS remux, validation, and selective `yt-dlp` fallback
-- Includes setup/install scripts and release-package generation
+- Download videos without requiring a membership or paid unlock.
+- Keep each detected video in its own card, even when multiple videos live on the same page.
+- Choose the download style per video: `Network` for source/segment-based acquisition, or `Record` when capture is the only workable path.
+- Automatically switch to another `Network` path when the current network method fails.
+- Export debug records for failed downloads.
+- Supports direct video URLs, blob-backed playback, and HLS playlists.
 
-## Architecture
+## Download Modes
 
-### Browser Extension
+- `Network`: Direct source fetch, source recovery, browser/native direct download, or HLS segment/remux workflows.
+- `Record`: Playback-based capture for cases where source-grade network retrieval is unavailable.
 
-- `background.js`, `content.js`, `popup.*`, `options.*`
-- `core/` for download, HLS, save, remux planning, and debug modules
-- `extension/` for native messaging bridge and popup/background helpers
-- `vendor/ffmpeg/` for browser-side FFmpeg wrapper/core assets
+## Notes
 
-### Native Host
+- Use this tool only for content you have the right to save.
+- Some DRM-protected or encrypted streams are still unsupported.
 
-- `native-host/`
-- Go-based native messaging host
-- Handles direct/native transfers, native HLS remux, validation, and selective extractor fallback
+## Install
 
-## Quick Start
+Use `dist/MyGoSeeker-1.2.2-Extension.zip`, or run the newest `MyGoSeeker-1.2.2-Setup*.exe` in `dist` to extract it. In Chrome/Edge, open the extensions page, enable Developer mode, choose **Load unpacked**, and select the extracted folder containing `manifest.json`. Reload the extension and refresh video pages after upgrading. Requires Chromium 116 or later.
 
-### Requirements
+The EXE is an **extension extraction assistant**. It does not install or update a native messaging downloader. This repository does not contain that downloader's source; the extension uses its own fallback when the native host is unavailable. ZIP/EXE checksums are in `dist/SHA256.json`.
 
-- Windows
-- Node.js
-- Go
-- A Chromium-based browser for the extension workflow
-
-### Build Release Artifacts
+## Development and verification
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-release.ps1
+npm.cmd ci
+python scripts/sync-ffmpeg.py
+npm.cmd run check
+npm.cmd test
+npx.cmd playwright install chromium
+node tests/browser-smoke.mjs
+python -m pip install -r requirements-build.txt
+python scripts/build-release.py
 ```
+
+The browser smoke test uses a temporary profile and synthetic local media; requires system `ffmpeg` and `ffprobe`. It checks direct downloads, HLS redirects, split audio, fMP4 byte ranges, a simulated HTTP 503 retry, browser completion, and the exported MP4's audio/video streams and duration. Development dependencies do not enter the packaged extension.
+
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for dependency provenance.
+
+## Limits and troubleshooting
+
+These fixes address reproducible failures; no measured success percentage across real websites is claimed. DRM/encrypted streams, incomplete live playlists, expired login/signature URLs, server restrictions, and browser memory limits can still prevent source downloads. For a live/blob player, select Record where available and keep playback running. Recording contains the portion played during capture and may lack audio when the page does not supply a capture audio track.
+
+HLS remux buffers resources in memory and IndexedDB and has a two-minute FFmpeg execution timeout. Very large jobs may exceed browser memory/storage or service-worker lifetime limits. Use an available native helper for those cases.
+
+Failed downloads expose **Export Record**, including attempts, fetch statuses/retries/ranges, remux diagnostics and output validation. Reports may contain signed source URLs; review their contents before sharing.
+
+## Sharing edition
+
+This package contains source code, tests, dependency declarations, and newly built ZIP/EXE releases. Browser profiles, saved download records, logs, build caches, previous releases, and development review reports are excluded. Account-specific extension identifiers and the original account's release link are removed; the setup-page button is disabled. Load this copy as a separate extension. The EXE extracts the extension and does not install a native helper.

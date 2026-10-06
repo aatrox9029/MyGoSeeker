@@ -1,5 +1,5 @@
 function createBlobProgressHandler(setCardStatus, getCard) {
-  return async function handleBlobProgress(message) {
+  return async function handleBlobProgress(message, sender) {
     if (!message.cardId) {
       return { ok: false, error: "Missing cardId" };
     }
@@ -7,6 +7,7 @@ function createBlobProgressHandler(setCardStatus, getCard) {
     if (!card) {
       return { ok: false, error: "Card not found" };
     }
+    if (sender?.tab?.id !== card.tabId) return { ok: false, error: "Progress sender does not match download tab" };
 
     if (message.status === "completed") {
       await setCardStatus(message.cardId, {
@@ -114,7 +115,7 @@ export function createRuntimeMessageHandler({
         await clearAllCache(Boolean(message.keepSettings));
         return { ok: true };
       case "BLOB_PROGRESS":
-        return handleBlobProgress(message);
+        return handleBlobProgress(message, sender);
       default:
         return { ok: false, error: "Unknown message type" };
     }

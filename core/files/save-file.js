@@ -35,9 +35,10 @@ export async function appendBinaryTransferChunk(tabId, transferId, chunkBase64) 
 }
 
 export async function sendArrayBufferToTransfer(tabId, transferId, arrayBuffer, chunkSize) {
-  const base64 = arrayBufferToBase64(arrayBuffer);
-  for (let offset = 0; offset < base64.length; offset += chunkSize) {
-    await appendBinaryTransferChunk(tabId, transferId, base64.slice(offset, offset + chunkSize));
+  if (!Number.isInteger(chunkSize) || chunkSize < 4) throw new Error("Invalid transfer chunk size");
+  const bytesPerChunk = Math.floor(chunkSize / 4) * 3;
+  for (let offset = 0; offset < arrayBuffer.byteLength; offset += bytesPerChunk) {
+    await appendBinaryTransferChunk(tabId, transferId, arrayBufferToBase64(arrayBuffer.slice(offset, offset + bytesPerChunk)));
   }
 }
 

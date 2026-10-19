@@ -78,7 +78,7 @@ async function validateVideoBlob(blob, options = {}) {
 }
 
 function findVideoByBlobUrl(blobUrl) {
-  const videos = [...document.querySelectorAll("video")];
+  const videos = (typeof discoverVideoElements === "function" ? discoverVideoElements() : [...document.querySelectorAll("video")]);
   for (const video of videos) {
     if (video.currentSrc === blobUrl || video.src === blobUrl) {
       return video;
@@ -99,11 +99,12 @@ async function tryDirectBlobFetch(blobUrl, fileBase, cardId) {
     mode: "blob-source-copy"
   });
 
-  const blob = await fetchMediaBlob(blobUrl);
+  const blob = await fetchMediaBlob(blobUrl, cardId);
   if (!blob || blob.size === 0) {
     throw new Error("Fetched blob is empty");
   }
   await validateVideoBlob(blob);
+  await waitForContentTask(cardId);
 
   const ext = getExtFromMime(blob.type);
   const filename = `${fileBase}.${ext}`;
@@ -151,11 +152,12 @@ async function tryRecoverOriginalSource(video, fileBase, cardId, blobUrl) {
   for (const candidate of candidates) {
     try {
       if (detectTypeFromUrl(candidate) === "m3u8") continue;
-      const blob = await fetchMediaBlob(candidate);
+      const blob = await fetchMediaBlob(candidate, cardId);
       if (!blob || blob.size === 0) {
         throw new Error("Recovered source is empty");
       }
       await validateVideoBlob(blob);
+      await waitForContentTask(cardId);
       const ext = detectTypeFromUrl(candidate) || getExtFromMime(blob.type);
       await saveBlobToFile(blob, `${fileBase}.${ext}`);
       await sendBlobProgress(cardId, {
@@ -166,6 +168,7 @@ async function tryRecoverOriginalSource(video, fileBase, cardId, blobUrl) {
       });
       return;
     } catch (error) {
+      if (error?.name === "AbortError") throw error;
       lastError = error instanceof Error ? error : new Error(String(error));
     }
   }

@@ -18,7 +18,7 @@ function parseAttributeList(line) {
   return attributes;
 }
 
-function parseAudioGroups(lines, baseUrl) {
+function parseAudioGroups(lines, baseUrl, mediaType = "AUDIO") {
   const groups = new Map();
   for (const rawLine of lines) {
     const line = rawLine.trim();
@@ -26,7 +26,7 @@ function parseAudioGroups(lines, baseUrl) {
       continue;
     }
     const attrs = parseAttributeList(line);
-    if ((attrs.TYPE || "").toUpperCase() !== "AUDIO") {
+    if ((attrs.TYPE || "").toUpperCase() !== mediaType) {
       continue;
     }
     const groupId = attrs["GROUP-ID"] || "";
@@ -53,6 +53,7 @@ export function parseMasterPlaylist(text, baseUrl) {
   if (!/^\s*#EXTM3U(?:\s|$)/.test(text)) throw new Error("Invalid HLS playlist header");
   const lines = text.split(/\r?\n/);
   const audioGroups = parseAudioGroups(lines, baseUrl);
+  const subtitleGroups = parseAudioGroups(lines, baseUrl, "SUBTITLES");
   const options = [];
 
   for (let index = 0; index < lines.length; index += 1) {
@@ -96,6 +97,7 @@ export function parseMasterPlaylist(text, baseUrl) {
       hasVideoCodec,
       audioGroupId,
       audioTracks,
+      subtitleTracks: subtitleGroups.get(attrs.SUBTITLES) || [],
       hasSeparateAudio: audioTracks.some((track) => Boolean(track.uri))
     });
   }

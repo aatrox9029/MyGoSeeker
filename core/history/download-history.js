@@ -1,3 +1,4 @@
+import { isSensitiveParameter } from "../privacy/sensitive-data.js";
 const HISTORY_PROTOCOLS = new Set(["http:", "https:"]);
 
 export function isDownloadHistoryEnabled(settings) {
@@ -16,9 +17,12 @@ export function normalizeDownloadHistoryUrl(rawUrl) {
     }
     url.username = "";
     url.password = "";
-    url.search = "";
+    for (const key of [...url.searchParams.keys()]) {
+      if (isSensitiveParameter(key)) url.searchParams.delete(key);
+    }
+    url.searchParams.sort();
     url.hash = "";
-    return `${url.origin}${url.pathname}`;
+    return `${url.origin}${url.pathname}${url.search}`;
   } catch {
     return "";
   }

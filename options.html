@@ -25,6 +25,7 @@
 
     <section class="panel">
       <h2>Display</h2>
+      <label class="field-stack"><span id="fileNameRuleLabel">Filename rule: {title}, {quality}, {date}, {id}</span><input id="fileNameRule" maxlength="160" value="{title}"></label>
       <label class="toggle-row">
         <input type="checkbox" id="downloadHistoryEnabled" checked>
         <span id="downloadHistoryEnabledLabel">Record downloaded video history and show downloaded badges</span>
@@ -43,6 +44,27 @@
       </label>
       <button id="clearCacheBtn" class="danger">Clear all cache and runtime data</button>
     </section>
+
+    <section class="panel">
+      <h2 id="nativeHelperHeading">Optional Native helper</h2>
+      <label class="toggle-row"><input type="checkbox" id="nativeHelperEnabled"><span id="nativeHelperLabel">Enable installed Native helper</span></label>
+      <p id="nativeHelperHelp" class="hint">Install NativeHelper EXE separately. Direct HTTP and HLS downloads can run locally; failures use the built-in downloader. HLS requires FFmpeg and ffprobe. Setup EXE only extracts the extension.</p>
+      <label class="field-stack"><span id="extensionIdLabel">Extension ID for NativeHelper installer</span><input id="extensionId" readonly></label>
+      <button id="nativeCheck"><span id="nativeCheckLabel">Check Native helper</span></button><p id="nativeHealth" role="status"></p>
+    </section>
+
+    <section class="panel">
+      <h2 id="sitePoliciesLabel">Website controls</h2>
+      <label class="field-stack"><span id="maxActiveLabel">Concurrent downloads (1–4)</span><input id="maxActiveDownloads" type="number" min="1" max="4" value="2"></label>
+      <label class="field-stack"><span id="originLabel">Website origin</span><input id="siteOrigin" type="url" placeholder="https://example.com"></label>
+      <label><input id="site-detection" type="checkbox" checked><span id="detectionLabel">Detect</span></label>
+      <label><input id="site-credentials" type="checkbox" checked><span id="credentialsLabel">Send cookies</span></label>
+      <label><input id="site-native" type="checkbox" checked><span id="nativeLabel">Allow Native helper</span></label>
+      <button id="addSite"><span id="addSiteLabel">Add / update website</span></button>
+      <p id="siteError" role="status"></p><div id="sitePolicyList"></div>
+      <p>Cookie control applies to extension fetches and Native helper. Credential-free direct downloads support MP4/WebM up to 16 MiB; browser permissions remain unchanged.</p>
+    </section>
+    <p id="buildInfo"></p>
 
     <section class="panel actions">
       <button id="saveBtn" class="primary">Save Settings</button>

@@ -1,15 +1,109 @@
-﻿const STATE_KEY = "vd_state_v1";
+import { createEmptyState } from "./core/storage/create-empty-state.js";
+import { normalizeStoredState } from "./core/storage/normalize-stored-state.js";
+import { normalizeVariant } from "./core/media/normalize-variant.js";
+import { ensureVariantMethodCoverage } from "./core/media/ensure-variant-method-coverage.js";
+import { clamp } from "./core/media/clamp.js";
+import { normalizeType } from "./core/media/normalize-type.js";
+import { detectTypeFromUrl } from "./core/media/detect-type-from-url.js";
+import { extractResolution } from "./core/media/extract-resolution.js";
+import { extractDimensions } from "./core/media/extract-dimensions.js";
+import { extractBitrate } from "./core/media/extract-bitrate.js";
+import { computeQualityScore } from "./core/media/compute-quality-score.js";
+import { buildVariantLabel } from "./core/media/build-variant-label.js";
+import { isPlaceholderThumbnail } from "./core/media/is-placeholder-thumbnail.js";
+import { shouldReplaceThumbnail } from "./core/media/should-replace-thumbnail.js";
+import { normalizeUrlForVariantKey } from "./core/media/normalize-url-for-variant-key.js";
+import { extractResolutionFromLabel } from "./core/media/extract-resolution-from-label.js";
+import { extractBitrateFromLabel } from "./core/media/extract-bitrate-from-label.js";
+import { buildVariantSimilarityKey } from "./core/media/build-variant-similarity-key.js";
+import { variantLabelDetailScore } from "./core/media/variant-label-detail-score.js";
+import { getSourceStabilityScore } from "./core/media/get-source-stability-score.js";
+import { variantInfoCompletenessRank } from "./core/media/variant-info-completeness-rank.js";
+import { choosePreferredVariant } from "./core/media/choose-preferred-variant.js";
+import { shouldReplaceVariantLabel } from "./core/media/should-replace-variant-label.js";
+import { dedupeVariantsBySimilarity } from "./core/media/dedupe-variants-by-similarity.js";
+import { chooseBestVariant } from "./core/media/choose-best-variant.js";
+import { reconcileCardSelection } from "./core/media/reconcile-card-selection.js";
+import { getVariantById } from "./core/media/get-variant-by-id.js";
+import { getFileExtensionFromName } from "./core/media/get-file-extension-from-name.js";
+import { isVideoFileExtension } from "./core/media/is-video-file-extension.js";
+import { isNonVideoMime } from "./core/media/is-non-video-mime.js";
+import { getHeaderValue } from "./core/media/get-header-value.js";
+import { shouldAcceptNetworkCandidate } from "./core/media/should-accept-network-candidate.js";
+import { getVariantAttemptPriority } from "./core/media/get-variant-attempt-priority.js";
+import { buildDownloadAttemptList } from "./core/media/build-download-attempt-list.js";
+import { isProbablyVideoDownloadItem } from "./core/media/is-probably-video-download-item.js";
+import { simplifyUrlForMerge } from "./core/media/simplify-url-for-merge.js";
+import { hashString } from "./core/media/hash-string.js";
+import { deriveCardTitle } from "./core/media/derive-card-title.js";
+import { normalizeTitleForGrouping } from "./core/media/normalize-title-for-grouping.js";
+import { sanitizeFileName } from "./core/media/sanitize-file-name.js";
+import { getExtensionFromType } from "./core/media/get-extension-from-type.js";
+import { createMediaDebugLog, addDebugEntry, finalizeDebugLog, setDebugSummary } from "./core/debug/media-debug-log.js";
+import { buildDebugReport } from "./core/debug/export-debug-report.js";
+import { applyDownloadHistory, normalizeDownloadHistoryUrl, recordDownloadedUrl } from "./core/history/download-history.js";
+import { parseMasterPlaylist as parseMasterPlaylistModule, choosePreferredMasterOption as choosePreferredMasterOptionModule, chooseAudioTrack, buildMasterVariantLabel as buildMasterVariantLabelModule } from "./core/hls/parse-master.js";
+import { fetchTextWithRetry } from "./core/hls/download-segments.js";
+import { releaseRemuxUrl } from "./core/files/save-remux.js";
+import { startDirectBrowserDownload } from "./core/download-direct.js";
+import { requestBlobDownload } from "./core/download-blob.js";
+import { expandCandidateDownloadMethods, getVariantMethodFamily, normalizeMethodFamily } from "./core/download-methods.js";
+import { collectRequestContext } from "./extension/background/request-context.js";
+import { shouldUseNativeDownload, getNativeDownloadMode } from "./extension/background/job-dispatcher.js";
+import { exportCardRecord as exportCardRecordFile } from "./extension/background/export-record.js";
+import { createNativePortMessageHandler } from "./extension/background/native-events.js";
+import { addNativePortListener, ensureNativePort, isNativeHostConnected, sendNativeCommand } from "./extension/background/native-port.js";
+import { createSetupReleaseController } from "./extension/background/setup-release.js";
+import { createRuntimeMessageHandler } from "./extension/background/runtime-router.js";
+import { buildNativeJob } from "./extension/native/normalize-job.js";
+import { EVENT_TYPES, REQUEST_TYPES, createRequestId } from "./extension/native/protocol.js";
+import { createHlsDownloader } from "./extension/background/hls-pipeline.js";
+import { fetchPlaylist } from "./core/hls/fetch-playlist.js";
+import { expandMasterOptions } from "./core/hls/expand-master.js";
+import { retainDownloadTask } from "./core/history/retain-download-task.js";
+import { getVisibleCards } from "./extension/background/visible-cards.js";
+import { createOperationRegistry, operationError, throwIfAborted } from "./core/tasks/operation-control.js";
+import { recoverDownloads } from "./extension/background/recover-downloads.js";
+import { createDownloadControls } from "./extension/background/download-controls.js";
+import { clearSegmentCheckpoint } from "./core/hls/segment-checkpoint.js";
+import { recoverRemux } from "./core/remux/recover-remux.js";
+import { createDownloadQueue, STREAM_RESERVATION, DIRECT_RESERVATION } from "./core/tasks/download-queue.js";
+import { createStateWriter } from "./core/storage/state-writer.js";
+import { compactPublicState } from "./core/storage/public-state.js";
+import { collectTemporaryFiles } from "./core/files/storage-maintenance.js";
+import { formatDownloadFileName } from "./core/downloads/file-name.js";
+import { normalizeStreamOptions } from "./core/downloads/stream-options.js";
+import { createDownloadProgressMonitor } from "./extension/background/download-progress.js";
+import { downloadSubtitle } from "./extension/background/subtitle-download.js";
+import { createDashDownloader } from "./extension/background/dash-pipeline.js";
+import { createCardMerger } from "./extension/background/merge-cards.js";
+import { createDownloadEventHandler } from "./extension/background/download-events.js";
+import { parseMpd } from "./core/dash/parse-mpd.js";
+import { getSitePolicy, normalizeSitePolicies } from "./core/settings/site-policy.js";
+import { createDiscoveryCache } from "./core/media/discovery-cache.js";
+import { createStorageManager } from "./extension/background/storage-manager.js";
+import { checkNativeHealth } from "./extension/native/health-check.js";
+import { previewMedia } from "./extension/background/media-preview.js";
+import { capturePlayerView } from "./extension/background/capture-player-view.js";
+import { downloadWithoutCredentials } from "./core/downloads/credential-free-direct.js";
+
+const STATE_KEY = "vd_state_v1";
 const SETTINGS_KEY = "vd_settings_v1";
 const DOWNLOAD_HISTORY_KEY = "vd_download_history_v1";
 
-const VIDEO_TYPES = ["mp4", "webm", "m3u8", "blob", "mov", "m4v", "mkv", "avi", "flv", "mpeg"];
+const VIDEO_TYPES = ["mp4", "webm", "m3u8", "mpd", "blob", "mov", "m4v", "mkv", "avi", "flv", "mpeg"];
 
 const DEFAULT_SETTINGS = {
   locale: "en",
+  fileNameRule: "{title}",
+  nativeHelperEnabled: false,
+  maxActiveDownloads: 2,
+  sitePolicies: {},
   enabledTypes: {
     mp4: true,
     webm: true,
     m3u8: true,
+    mpd: true,
     blob: true,
     mov: true,
     m4v: true,
@@ -25,6 +119,7 @@ const DEFAULT_SETTINGS = {
 let initialized = false;
 let initializationPromise;
 const startingCards = new Set();
+const downloadOperations = createOperationRegistry();
 let settings = structuredClone(DEFAULT_SETTINGS);
 let state = createEmptyState();
 let downloadHistory = [];
@@ -40,13 +135,6 @@ const PAGE_THUMB_CACHE_TTL_MS = 30 * 1000;
 const pageThumbnailCache = new Map();
 const VIDEO_FILE_EXTENSIONS = new Set(["mp4", "webm", "mov", "m4v", "mkv", "avi", "flv", "mpeg", "mpg", "ts", "m2ts"]);
 
-function createEmptyState() {
-  return {
-    cards: {},
-    updatedAt: Date.now()
-  };
-}
-
 function cloneSettingsWithDefaults(input) {
   const merged = structuredClone(DEFAULT_SETTINGS);
   if (!input || typeof input !== "object") {
@@ -58,6 +146,10 @@ function cloneSettingsWithDefaults(input) {
   if (typeof input.downloadHistoryEnabled === "boolean") {
     merged.downloadHistoryEnabled = input.downloadHistoryEnabled;
   }
+  if (typeof input.nativeHelperEnabled === "boolean") merged.nativeHelperEnabled = input.nativeHelperEnabled;
+  merged.maxActiveDownloads = Math.min(4, Math.max(1, Math.floor(Number(input.maxActiveDownloads) || 2)));
+  merged.sitePolicies = normalizeSitePolicies(input.sitePolicies);
+  if (typeof input.fileNameRule === "string") merged.fileNameRule = input.fileNameRule.slice(0, 160) || "{title}";
   if (typeof input.locale === "string") {
     merged.locale = input.locale;
   }
@@ -71,131 +163,6 @@ function cloneSettingsWithDefaults(input) {
   return merged;
 }
 
-function normalizeStoredState(input) {
-  if (!input || typeof input !== "object" || !input.cards || typeof input.cards !== "object") {
-    return createEmptyState();
-  }
-
-  const normalized = createEmptyState();
-  for (const [cardId, card] of Object.entries(input.cards)) {
-    if (!card || typeof card !== "object" || !Array.isArray(card.variants)) {
-      continue;
-    }
-    normalized.cards[cardId] = {
-      id: cardId,
-      tabId: Number.isInteger(card.tabId) ? card.tabId : -1,
-      pageUrl: typeof card.pageUrl === "string" ? card.pageUrl : "",
-      pageTitle: typeof card.pageTitle === "string" ? card.pageTitle : "",
-      title: typeof card.title === "string" ? card.title : "Video",
-      thumbnail: typeof card.thumbnail === "string" ? card.thumbnail : "",
-      identityKey: typeof card.identityKey === "string" ? card.identityKey : "",
-      mediaKey: typeof card.mediaKey === "string" ? card.mediaKey : "",
-      ignored: Boolean(card.ignored),
-      selectedVariantId: typeof card.selectedVariantId === "string" ? card.selectedVariantId : "",
-      selectionLocked: Boolean(card.selectionLocked),
-      status: typeof card.status === "string" ? card.status : "available",
-      progress: Number.isFinite(card.progress) ? clamp(card.progress, 0, 100) : 0,
-      stage: typeof card.stage === "string" ? card.stage : "Ready",
-      error: typeof card.error === "string" ? card.error : "",
-      downloadMode: typeof card.downloadMode === "string" ? card.downloadMode : "unknown",
-      debugLogId: typeof card.debugLogId === "string" ? card.debugLogId : "",
-      debugReport: typeof card.debugReport === "string" ? card.debugReport : "",
-      lastValidation: card.lastValidation && typeof card.lastValidation === "object" ? card.lastValidation : null,
-      activeDownloadId: Number.isInteger(card.activeDownloadId) ? card.activeDownloadId : 0,
-      activeObjectUrl: typeof card.activeObjectUrl === "string" ? card.activeObjectUrl : "",
-      createdAt: Number.isFinite(card.createdAt) ? card.createdAt : Date.now(),
-      updatedAt: Number.isFinite(card.updatedAt) ? card.updatedAt : Date.now(),
-      completedAt: Number.isFinite(card.completedAt) ? card.completedAt : 0,
-      nativeJobId: typeof card.nativeJobId === "string" ? card.nativeJobId : "",
-      variants: card.variants
-        .map((variant) => normalizeVariant(variant))
-        .filter(Boolean)
-    };
-
-    if (!normalized.cards[cardId].selectedVariantId && normalized.cards[cardId].variants.length > 0) {
-      normalized.cards[cardId].selectedVariantId = chooseBestVariant(normalized.cards[cardId].variants).id;
-    }
-  }
-
-  normalized.updatedAt = Number.isFinite(input.updatedAt) ? input.updatedAt : Date.now();
-  return normalized;
-}
-
-function normalizeVariant(variant) {
-  if (!variant || typeof variant !== "object" || typeof variant.url !== "string") {
-    return null;
-  }
-  const type = normalizeType(variant.type || detectTypeFromUrl(variant.url));
-  if (!type) {
-    return null;
-  }
-  return {
-    id: typeof variant.id === "string" ? variant.id : `variant_${hashString(variant.url)}`,
-    url: variant.url,
-    audioUrl: typeof variant.audioUrl === "string" ? variant.audioUrl : "",
-    masterUrl: typeof variant.masterUrl === "string" ? variant.masterUrl : "",
-    type,
-    methodFamily: normalizeMethodFamily(variant.methodFamily),
-    source: typeof variant.source === "string" ? variant.source : "unknown",
-    label: typeof variant.label === "string" ? variant.label : buildVariantLabel(variant.url, type),
-    score: Number.isFinite(variant.score) ? variant.score : computeQualityScore(variant.url, type),
-    isBlob: type === "blob",
-    isM3u8: type === "m3u8",
-    detectedAt: Number.isFinite(variant.detectedAt) ? variant.detectedAt : Date.now()
-  };
-}
-
-function ensureVariantMethodCoverage(variants) {
-  if (!Array.isArray(variants) || variants.length === 0) {
-    return { variants: [], changed: false };
-  }
-  const result = [];
-  const seenBlobKeys = new Set();
-  let changed = false;
-
-  for (const variant of variants) {
-    if (!variant) {
-      continue;
-    }
-    if (variant.type === "blob") {
-      const blobKey = `${variant.url}|${variant.type}|${variant.source || "unknown"}`;
-      if (seenBlobKeys.has(blobKey)) {
-        changed = true;
-        continue;
-      }
-      seenBlobKeys.add(blobKey);
-      const families = ["network", "record"];
-      for (const methodFamily of families) {
-        const nextVariant = {
-          ...variant,
-          id: `variant_${hashString(`${blobKey}|${methodFamily}`)}`,
-          methodFamily
-        };
-        result.push(nextVariant);
-      }
-      const blobFamilyCount = variants.filter((item) => item?.type === "blob" && `${item.url}|${item.type}|${item.source || "unknown"}` === blobKey).length;
-      if (blobFamilyCount !== 2 || !variants.some((item) => item?.type === "blob" && item?.methodFamily === "record" && `${item.url}|${item.type}|${item.source || "unknown"}` === blobKey)) {
-        changed = true;
-      }
-      continue;
-    }
-    const nextFamily = normalizeMethodFamily(variant.methodFamily);
-    if (nextFamily !== variant.methodFamily) {
-      changed = true;
-    }
-    result.push({
-      ...variant,
-      methodFamily: nextFamily
-    });
-  }
-
-  return { variants: result, changed };
-}
-
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value));
-}
-
 async function ensureInitialized() {
   if (initialized) return;
   if (!initializationPromise) initializationPromise = initializeState().catch((error) => {
@@ -206,10 +173,16 @@ async function ensureInitialized() {
 }
 
 async function initializeState() {
-  const stored = await chrome.storage.local.get([STATE_KEY, SETTINGS_KEY, DOWNLOAD_HISTORY_KEY]);
+  const stored = await chrome.storage.local.get([STATE_KEY, SETTINGS_KEY, DOWNLOAD_HISTORY_KEY, "vd_history_identity_version"]);
   settings = cloneSettingsWithDefaults(stored[SETTINGS_KEY]);
+  downloadQueue.configure(settings.maxActiveDownloads);
   state = normalizeStoredState(stored[STATE_KEY]);
-  downloadHistory = normalizeDownloadHistoryEntries(stored[DOWNLOAD_HISTORY_KEY]);
+  // Legacy records discarded every query parameter, so their identities cannot be safely migrated.
+  downloadHistory = stored.vd_history_identity_version === 2 ? normalizeDownloadHistoryEntries(stored[DOWNLOAD_HISTORY_KEY]) : [];
+  if (stored.vd_history_identity_version !== 2) {
+    await chrome.storage.local.set({ [DOWNLOAD_HISTORY_KEY]: downloadHistory, vd_history_identity_version: 2,
+      ...(Array.isArray(stored[DOWNLOAD_HISTORY_KEY]) && stored[DOWNLOAD_HISTORY_KEY].length ? { vd_download_history_legacy_backup: stored[DOWNLOAD_HISTORY_KEY] } : {}) });
+  }
   let migrated = false;
   for (const card of Object.values(state.cards)) {
     if (!card || !Array.isArray(card.variants) || card.variants.length === 0) {
@@ -247,15 +220,38 @@ async function initializeState() {
       migrated = true;
     }
   }
-  if (migrated) {
+  const recovered = await recoverDownloads(state.cards, {
+    downloads: chrome.downloads, tabs: chrome.tabs,
+    recoverRemux,
+    isVideo: (item, card) => isProbablyVideoDownloadItem(item, getVariantById(card, card.selectedVariantId))
+  });
+  if (recovered) {
+    for (const card of Object.values(state.cards)) {
+      if (card.status === "completed" && (getVariantById(card, card.selectedVariantId)?.isM3u8 || getVariantById(card, card.selectedVariantId)?.type === "mpd")) await clearSegmentCheckpoint(card.id);
+      if (card.status === "completed" && settings.downloadHistoryEnabled) {
+        downloadHistory = recordDownloadedUrl(downloadHistory, getVariantById(card, card.selectedVariantId)?.url || "");
+      }
+    }
+    await persistDownloadHistory();
+  }
+  if (migrated || recovered) {
     await persistState();
   }
+  const cleanup = await collectTemporaryFiles(state.cards);
+  console.debug("Temporary storage startup cleanup", cleanup);
+  for (const card of Object.values(state.cards)) {
+    if (card.status === "queued") { card.status = "paused"; card.stage = "Queued task interrupted; resume"; }
+    if (card.status === "downloading" || (card.status === "paused" && card.activeDownloadId)) downloadQueue.restore(card.id, reservationFor(getVariantById(card, card.selectedVariantId), card));
+  }
+  await persistState();
   initialized = true;
+  progressMonitor.start();
+  await chrome.alarms?.create("temporary-cleanup", { periodInMinutes: 60 });
 }
 
 async function persistState() {
   state.updatedAt = Date.now();
-  await chrome.storage.local.set({ [STATE_KEY]: state });
+  await stateWriter.flush();
 }
 
 async function persistSettings() {
@@ -280,450 +276,11 @@ async function persistDownloadHistory() {
   await chrome.storage.local.set({ [DOWNLOAD_HISTORY_KEY]: downloadHistory });
 }
 
+let broadcastTimer;
 function broadcastStateUpdated() {
-  chrome.runtime.sendMessage({ type: "STATE_UPDATED" }).catch(() => {});
-}
-
-function normalizeType(type) {
-  if (!type || typeof type !== "string") {
-    return "";
-  }
-  const lower = type.toLowerCase();
-  if (lower === "mpg") {
-    return "mpeg";
-  }
-  if (VIDEO_TYPES.includes(lower)) {
-    return lower;
-  }
-  return "";
-}
-
-function detectTypeFromUrl(rawUrl) {
-  if (!rawUrl || typeof rawUrl !== "string") {
-    return "";
-  }
-  if (rawUrl.startsWith("blob:")) {
-    return "blob";
-  }
-  const lower = rawUrl.toLowerCase();
-  if (lower.includes(".m3u8")) {
-    return "m3u8";
-  }
-  if (lower.includes(".webm")) {
-    return "webm";
-  }
-  if (lower.includes(".mp4")) {
-    return "mp4";
-  }
-  if (lower.includes(".mov")) {
-    return "mov";
-  }
-  if (lower.includes(".m4v")) {
-    return "m4v";
-  }
-  if (lower.includes(".mkv")) {
-    return "mkv";
-  }
-  if (lower.includes(".avi")) {
-    return "avi";
-  }
-  if (lower.includes(".flv")) {
-    return "flv";
-  }
-  if (lower.includes(".mpeg") || lower.includes(".mpg")) {
-    return "mpeg";
-  }
-
-  try {
-    const url = new URL(rawUrl);
-    const ext = url.pathname.split(".").pop()?.toLowerCase() || "";
-    return normalizeType(ext);
-  } catch {
-    return "";
-  }
-}
-
-function extractResolution(rawUrl) {
-  if (!rawUrl) {
-    return 0;
-  }
-  const dimensionMatch = rawUrl.match(/(?:^|[^\d])(\d{3,4})[x*](\d{3,4})(?:[^\d]|$)/i);
-  if (dimensionMatch) {
-    return Number(dimensionMatch[2]) || 0;
-  }
-  const match = rawUrl.match(/(?:^|[^\d])(2160|1440|1080|720|540|480|360|240)p?(?:[^\d]|$)/i);
-  if (match) {
-    return Number(match[1]);
-  }
-  return 0;
-}
-
-function extractDimensions(rawUrl) {
-  if (!rawUrl) {
-    return { width: 0, height: 0 };
-  }
-  const match = rawUrl.match(/(?:^|[^\d])(\d{3,4})[x*](\d{3,4})(?:[^\d]|$)/i);
-  if (!match) {
-    return { width: 0, height: 0 };
-  }
-  return {
-    width: Number(match[1]) || 0,
-    height: Number(match[2]) || 0
-  };
-}
-
-function extractBitrate(rawUrl) {
-  if (!rawUrl) {
-    return 0;
-  }
-  const match = rawUrl.match(/(?:^|[^\d])(\d{3,5})k(?:[^\d]|$)/i);
-  if (match) {
-    return Number(match[1]);
-  }
-  return 0;
-}
-
-function computeQualityScore(rawUrl, type) {
-  const dims = extractDimensions(rawUrl);
-  const resolution = type === "m3u8"
-    ? (dims.height || 0)
-    : extractResolution(rawUrl);
-  const bitrate = extractBitrate(rawUrl);
-  const m3u8Boost = type === "m3u8" ? 0.001 : 0;
-  return resolution * 10000 + dims.width + bitrate / 10 + m3u8Boost;
-}
-
-function buildVariantLabel(rawUrl, type) {
-  const dims = extractDimensions(rawUrl);
-  const resolution = type === "m3u8"
-    ? 0
-    : extractResolution(rawUrl);
-  const bitrate = extractBitrate(rawUrl);
-  const parts = [];
-  if (dims.width && dims.height) {
-    parts.push(`${dims.width}*${dims.height}`);
-  } else if (resolution) {
-    parts.push(`${resolution}p`);
-  } else if (type === "m3u8") {
-    parts.push("Auto");
-  }
-  if (bitrate) {
-    parts.push(`${bitrate}k`);
-  }
-  if (parts.length === 0) {
-    parts.push(type.toUpperCase());
-  }
-  return `${parts.join(" ")} (${type})`;
-}
-
-function isPlaceholderThumbnail(thumbnail) {
-  return typeof thumbnail === "string" && thumbnail.startsWith("data:image/svg+xml;base64,");
-}
-
-function shouldReplaceThumbnail(currentThumbnail, nextThumbnail) {
-  if (!nextThumbnail || typeof nextThumbnail !== "string") {
-    return false;
-  }
-  if (!currentThumbnail || typeof currentThumbnail !== "string") {
-    return true;
-  }
-  const currentPlaceholder = isPlaceholderThumbnail(currentThumbnail);
-  const nextPlaceholder = isPlaceholderThumbnail(nextThumbnail);
-  if (currentPlaceholder && !nextPlaceholder) {
-    return true;
-  }
-  if (!currentPlaceholder && nextPlaceholder) {
-    return false;
-  }
-  return currentPlaceholder && nextPlaceholder && currentThumbnail !== nextThumbnail;
-}
-
-function normalizeUrlForVariantKey(rawUrl) {
-  if (!rawUrl || typeof rawUrl !== "string") {
-    return "";
-  }
-  try {
-    const url = new URL(rawUrl);
-    url.hash = "";
-    return url.href;
-  } catch {
-    return rawUrl.split("?")[0].toLowerCase();
-  }
-}
-
-function extractResolutionFromLabel(label) {
-  if (!label || typeof label !== "string") {
-    return { width: 0, height: 0 };
-  }
-  const dims = label.match(/(\d{3,4})[x*](\d{3,4})/i);
-  if (dims) {
-    return {
-      width: Number(dims[1]) || 0,
-      height: Number(dims[2]) || 0
-    };
-  }
-  const heightOnly = label.match(/(?:^|[^\d])(\d{3,4})p(?:[^\d]|$)/i);
-  if (heightOnly) {
-    return {
-      width: 0,
-      height: Number(heightOnly[1]) || 0
-    };
-  }
-  return { width: 0, height: 0 };
-}
-
-function extractBitrateFromLabel(label) {
-  if (!label || typeof label !== "string") {
-    return 0;
-  }
-  const match = label.match(/(?:^|[^\d])(\d{3,5})k(?:[^\d]|$)/i);
-  if (!match) {
-    return 0;
-  }
-  return Number(match[1]) || 0;
-}
-
-function buildVariantSimilarityKey(variant) {
-  const baseType = normalizeType(variant.type);
-  const methodFamily = getVariantMethodFamily(variant);
-  const urlKey = normalizeUrlForVariantKey(variant.url);
-  const labelDims = extractResolutionFromLabel(variant.label);
-  const urlDims = extractDimensions(variant.url);
-  const width = labelDims.width || urlDims.width || 0;
-  const height = labelDims.height || urlDims.height || extractResolution(variant.url) || 0;
-  const labelBitrate = extractBitrateFromLabel(variant.label);
-  const urlBitrate = extractBitrate(variant.url);
-  const bitrate = labelBitrate || urlBitrate || 0;
-  const bitrateBucket = bitrate > 0 ? Math.round(bitrate / 100) * 100 : 0;
-  const qualityEdge = width && height ? Math.min(width, height) : height;
-
-  if (qualityEdge) {
-    return `${baseType}|${methodFamily}|${urlKey}|edge:${qualityEdge}|bitrate:${bitrateBucket || 0}`;
-  }
-  if (bitrateBucket) {
-    return `${baseType}|${methodFamily}|${urlKey}|bitrate:${bitrateBucket}`;
-  }
-  return `${baseType}|${methodFamily}|${urlKey}`;
-}
-
-function variantLabelDetailScore(variant) {
-  let score = 0;
-  const label = typeof variant.label === "string" ? variant.label : "";
-  if (/(\d{3,4})[x*](\d{3,4})/i.test(label)) {
-    score += 3;
-  } else if (/(?:^|[^\d])(\d{3,4})p(?:[^\d]|$)/i.test(label)) {
-    score += 2;
-  }
-  if (/(?:^|[^\d])(\d{3,5})k(?:[^\d]|$)/i.test(label)) {
-    score += 2;
-  }
-  if (typeof variant.source === "string" && variant.source.includes(":master")) {
-    score += 1;
-  }
-  return score;
-}
-
-function getSourceStabilityScore(variant) {
-  let score = 0;
-  const source = typeof variant?.source === "string" ? variant.source.toLowerCase() : "";
-  const url = typeof variant?.url === "string" ? variant.url : "";
-
-  if (url.startsWith("https://")) {
-    score += 8;
-  }
-  if (source.includes("master")) {
-    score += 14;
-  }
-  if (source.includes("network")) {
-    score += 10;
-  }
-  if (source.includes("dom")) {
-    score += 6;
-  }
-  if (source.includes("unknown")) {
-    score += 2;
-  }
-  if (variant?.isBlob) {
-    score -= 6;
-  }
-  return score;
-}
-
-function variantInfoCompletenessRank(variant) {
-  const label = typeof variant.label === "string" ? variant.label : "";
-  const url = typeof variant.url === "string" ? variant.url : "";
-  const labelDims = extractResolutionFromLabel(label);
-  const urlDims = extractDimensions(url);
-  const hasResolution = Boolean(labelDims.height || urlDims.height || extractResolution(url));
-  const hasBitrate = Boolean(extractBitrateFromLabel(label) || extractBitrate(url));
-  if (hasResolution && hasBitrate) {
-    return 2;
-  }
-  if (hasResolution || hasBitrate) {
-    return 1;
-  }
-  return 0;
-}
-
-function choosePreferredVariant(existing, incoming) {
-  if (!existing) {
-    return incoming;
-  }
-  if (!incoming) {
-    return existing;
-  }
-  const existingCompleteness = variantInfoCompletenessRank(existing);
-  const incomingCompleteness = variantInfoCompletenessRank(incoming);
-  if (incomingCompleteness !== existingCompleteness) {
-    return incomingCompleteness > existingCompleteness ? incoming : existing;
-  }
-  const existingDetail = variantLabelDetailScore(existing);
-  const incomingDetail = variantLabelDetailScore(incoming);
-  if (incomingDetail !== existingDetail) {
-    return incomingDetail > existingDetail ? incoming : existing;
-  }
-  const existingStability = getSourceStabilityScore(existing);
-  const incomingStability = getSourceStabilityScore(incoming);
-  if (incomingStability !== existingStability) {
-    return incomingStability > existingStability ? incoming : existing;
-  }
-  if (incoming.score !== existing.score) {
-    return incoming.score > existing.score ? incoming : existing;
-  }
-  return incoming.detectedAt > existing.detectedAt ? incoming : existing;
-}
-
-function shouldReplaceVariantLabel(currentLabel, nextLabel) {
-  if (!nextLabel || typeof nextLabel !== "string") {
-    return false;
-  }
-  if (!currentLabel || typeof currentLabel !== "string") {
-    return true;
-  }
-  const currentDetail = variantLabelDetailScore({ label: currentLabel, source: "" });
-  const nextDetail = variantLabelDetailScore({ label: nextLabel, source: "" });
-  if (nextDetail !== currentDetail) {
-    return nextDetail > currentDetail;
-  }
-  const currentCompleteness = variantInfoCompletenessRank({ label: currentLabel, url: "" });
-  const nextCompleteness = variantInfoCompletenessRank({ label: nextLabel, url: "" });
-  if (nextCompleteness !== currentCompleteness) {
-    return nextCompleteness > currentCompleteness;
-  }
-  return false;
-}
-
-function dedupeVariantsBySimilarity(variants) {
-  const result = [];
-  const keyToIndex = new Map();
-  let changed = false;
-
-  for (const variant of variants) {
-    const key = buildVariantSimilarityKey(variant);
-    if (!keyToIndex.has(key)) {
-      keyToIndex.set(key, result.length);
-      result.push(variant);
-      continue;
-    }
-    const index = keyToIndex.get(key);
-    const kept = result[index];
-    const preferred = choosePreferredVariant(kept, variant);
-    if (preferred !== kept) {
-      result[index] = preferred;
-    }
-    changed = true;
-  }
-
-  return { variants: result, changed: changed || result.length !== variants.length };
-}
-
-function chooseBestVariant(variants) {
-  return [...variants].sort((a, b) => {
-    if (a.isBlob !== b.isBlob) {
-      return a.isBlob ? 1 : -1;
-    }
-    const aCompleteness = variantInfoCompletenessRank(a);
-    const bCompleteness = variantInfoCompletenessRank(b);
-    if (aCompleteness !== bCompleteness) {
-      return bCompleteness - aCompleteness;
-    }
-    if (b.score !== a.score) {
-      return b.score - a.score;
-    }
-    const aStability = getSourceStabilityScore(a);
-    const bStability = getSourceStabilityScore(b);
-    if (aStability !== bStability) {
-      return bStability - aStability;
-    }
-    if (a.isM3u8 !== b.isM3u8) {
-      return a.isM3u8 ? -1 : 1;
-    }
-    return b.detectedAt - a.detectedAt;
-  })[0];
-}
-
-function reconcileCardSelection(card) {
-  if (!card || !Array.isArray(card.variants) || card.variants.length === 0) {
-    return false;
-  }
-  if (card.status === "downloading") return false;
-  const selectedStillExists = card.variants.some((variant) => variant.id === card.selectedVariantId);
-  if (card.selectedVariantId && selectedStillExists && card.selectionLocked) {
-    return false;
-  }
-  const bestVariant = chooseBestVariant(card.variants);
-  if (!bestVariant || card.selectedVariantId === bestVariant.id) {
-    return false;
-  }
-  card.selectedVariantId = bestVariant.id;
-  return true;
-}
-
-function getVariantById(card, variantId) {
-  if (!card || !Array.isArray(card.variants)) {
-    return null;
-  }
-  return card.variants.find((variant) => variant.id === variantId) || null;
-}
-
-function getFileExtensionFromName(name) {
-  if (!name || typeof name !== "string") {
-    return "";
-  }
-  const clean = name.split("?")[0].split("#")[0];
-  const dot = clean.lastIndexOf(".");
-  if (dot < 0) {
-    return "";
-  }
-  return clean.slice(dot + 1).toLowerCase();
-}
-
-function isVideoFileExtension(ext) {
-  return VIDEO_FILE_EXTENSIONS.has(ext);
-}
-
-function isNonVideoMime(mime) {
-  if (!mime) {
-    return false;
-  }
-  const lower = mime.toLowerCase();
-  if (lower.startsWith("video/")) {
-    return false;
-  }
-  return lower.startsWith("text/")
-    || lower.includes("html")
-    || lower.includes("json")
-    || lower.includes("xml")
-    || lower.includes("javascript");
-}
-
-function getHeaderValue(headers, name) {
-  if (!Array.isArray(headers)) {
-    return "";
-  }
-  const target = String(name || "").toLowerCase();
-  const entry = headers.find((item) => String(item?.name || "").toLowerCase() === target);
-  return typeof entry?.value === "string" ? entry.value : "";
+  if (broadcastTimer) return;
+  broadcastTimer = setTimeout(() => { broadcastTimer = null; chrome.runtime.sendMessage({ type: "STATE_UPDATED" }).catch(() => {}); }, 150);
+  broadcastTimer.unref?.();
 }
 
 function cacheNetworkResponseMeta(details) {
@@ -741,93 +298,6 @@ function cacheNetworkResponseMeta(details) {
   });
 }
 
-function shouldAcceptNetworkCandidate(url, detectedType, meta) {
-  if (!url || !detectedType) {
-    return false;
-  }
-  if (detectedType === "m3u8") {
-    return true;
-  }
-  if (!meta || typeof meta !== "object") {
-    return false;
-  }
-  if (Number.isInteger(meta.statusCode) && meta.statusCode >= 400) {
-    return false;
-  }
-
-  const requestType = String(meta.requestType || "").toLowerCase();
-  if (["image", "script", "stylesheet", "font", "ping", "csp_report", "imageset", "sub_frame", "main_frame"].includes(requestType)) {
-    return false;
-  }
-
-  const contentType = String(meta.contentType || "").toLowerCase();
-  if (contentType) {
-    if (contentType.startsWith("video/")) {
-      return true;
-    }
-    if (contentType.includes("application/octet-stream")) {
-      return true;
-    }
-    if (isNonVideoMime(contentType) || contentType.startsWith("image/")) {
-      return false;
-    }
-  }
-
-  const disposition = String(meta.contentDisposition || "").toLowerCase();
-  if (disposition.includes("attachment")) {
-    return true;
-  }
-
-  return requestType === "media" || requestType === "object";
-}
-
-function getVariantAttemptPriority(variant) {
-  let priority = 0;
-  if (variant.isBlob) {
-    priority -= 10000;
-  }
-  priority += (Number.isFinite(variant.score) ? variant.score : 0) * 10;
-  priority += variantInfoCompletenessRank(variant) * 1000;
-  priority += getSourceStabilityScore(variant) * 100;
-  if (variant.isM3u8) {
-    priority += 80;
-  }
-  if (getVariantMethodFamily(variant) === "record") {
-    priority -= 5000;
-  }
-  return priority;
-}
-
-function buildDownloadAttemptList(card, preferredVariantId) {
-  if (!card || !Array.isArray(card.variants) || card.variants.length === 0) {
-    return [];
-  }
-  const preferred = getVariantById(card, preferredVariantId) || chooseBestVariant(card.variants);
-  if (!preferred) {
-    return [];
-  }
-  const preferredFamily = getVariantMethodFamily(preferred);
-
-  const preferredKey = buildVariantSimilarityKey(preferred);
-  const sameQuality = card.variants
-    .filter((variant) => {
-      return variant.id !== preferred.id
-        && getVariantMethodFamily(variant) === preferredFamily
-        && buildVariantSimilarityKey(variant) === preferredKey;
-    })
-    .sort((a, b) => getVariantAttemptPriority(b) - getVariantAttemptPriority(a));
-
-  const remaining = card.variants
-    .filter((variant) => {
-      return variant.id !== preferred.id
-        && getVariantMethodFamily(variant) === preferredFamily
-        && buildVariantSimilarityKey(variant) !== preferredKey;
-    })
-    .sort((a, b) => getVariantAttemptPriority(b) - getVariantAttemptPriority(a));
-
-  return [preferred.id, ...sameQuality.map((variant) => variant.id), ...remaining.map((variant) => variant.id)];
-}
-
 async function tryRemoveDownloadedFile(downloadId) {
   try {
     await chrome.downloads.removeFile(downloadId);
@@ -838,84 +308,6 @@ async function tryRemoveDownloadedFile(downloadId) {
     await chrome.downloads.erase({ id: downloadId });
   } catch {
     // Ignore when entry cannot be erased.
-  }
-}
-
-function isProbablyVideoDownloadItem(item, attemptedVariant) {
-  if (!item || item.fileSize === 0 || item.exists === false) {
-    return false;
-  }
-  if (attemptedVariant?.isBlob || attemptedVariant?.isM3u8) {
-    return true;
-  }
-
-  const mime = typeof item.mime === "string" ? item.mime : "";
-  if (isNonVideoMime(mime)) {
-    return false;
-  }
-  if (mime.toLowerCase().startsWith("video/")) {
-    return true;
-  }
-
-  const extFromFilename = getFileExtensionFromName(item.filename || "");
-  if (extFromFilename) {
-    return isVideoFileExtension(extFromFilename);
-  }
-  const extFromFinalUrl = getFileExtensionFromName(item.finalUrl || item.url || "");
-  if (extFromFinalUrl) {
-    return isVideoFileExtension(extFromFinalUrl);
-  }
-  return true;
-}
-
-function simplifyUrlForMerge(rawUrl) {
-  if (!rawUrl || typeof rawUrl !== "string") {
-    return "";
-  }
-  if (rawUrl.startsWith("blob:")) {
-    return rawUrl;
-  }
-  try {
-    const url = new URL(rawUrl);
-    let path = url.pathname.toLowerCase();
-    path = path.replace(/\/\d{2,5}x\d{2,5}(?=\/)/g, "");
-    path = path.replace(/\/(2160|1440|1080|720|540|480|360|240)p(?=\/)/g, "");
-    path = path.replace(/(?:^|[_\-\.])(2160|1440|1080|720|540|480|360|240)p?(?=[_\-\.]|$)/g, "");
-    path = path.replace(/(?:^|[_\-\.])(low|mid|high|hd|fhd|uhd)(?=[_\-\.]|$)/g, "");
-    path = path.replace(/(?:^|[_\-\.])\d{3,5}k(?=[_\-\.]|$)/g, "");
-    path = path.replace(/\.(mp4|webm|m3u8|mov|m4v|mkv|avi|flv|mpeg|mpg)$/g, "");
-    path = path.replace(/\/{2,}/g, "/");
-    return `${url.origin}${path}`;
-  } catch {
-    return rawUrl.split("?")[0].toLowerCase();
-  }
-}
-
-function hashString(input) {
-  let hash = 0;
-  for (let i = 0; i < input.length; i += 1) {
-    hash = (hash << 5) - hash + input.charCodeAt(i);
-    hash |= 0;
-  }
-  return Math.abs(hash).toString(16);
-}
-
-function deriveCardTitle(candidate, pageTitle) {
-  if (candidate.title) {
-    return candidate.title;
-  }
-  if (pageTitle) {
-    return pageTitle;
-  }
-  try {
-    const url = new URL(candidate.url);
-    const file = url.pathname.split("/").pop();
-    if (file) {
-      return decodeURIComponent(file);
-    }
-    return `${url.hostname} video`;
-  } catch {
-    return "Video";
   }
 }
 
@@ -947,103 +339,34 @@ async function getTabInfo(tabId) {
   }
 }
 
-async function requestPageThumbnail(tabId) {
+async function requestPageThumbnail(tabId, frameId = 0, mediaUrl = "") {
   if (!Number.isInteger(tabId) || tabId < 0) {
     return "";
   }
-  const cached = pageThumbnailCache.get(tabId);
+  const cacheKey = `${frameId}:${mediaUrl}`;
+  const frameCache = pageThumbnailCache.get(tabId) || new Map();
+  const cached = frameCache.get(cacheKey);
   const now = Date.now();
-  if (cached && now - cached.cachedAt < PAGE_THUMB_CACHE_TTL_MS) {
+  if (cached?.thumbnail && now - cached.cachedAt < PAGE_THUMB_CACHE_TTL_MS) {
     return cached.thumbnail || "";
   }
 
   try {
-    const response = await chrome.tabs.sendMessage(tabId, { type: "GET_PAGE_THUMBNAIL" });
+    const response = await chrome.tabs.sendMessage(tabId, { type: "GET_PAGE_THUMBNAIL", mediaUrl }, { frameId });
     const thumbnail = response?.ok && typeof response.thumbnail === "string" ? response.thumbnail : "";
-    pageThumbnailCache.set(tabId, {
+    if (frameCache.size >= 50) frameCache.delete(frameCache.keys().next().value);
+    frameCache.set(cacheKey, {
       thumbnail,
       cachedAt: now
     });
+    pageThumbnailCache.set(tabId, frameCache);
     return thumbnail;
   } catch {
-    pageThumbnailCache.set(tabId, { thumbnail: "", cachedAt: now });
     return "";
   }
 }
 
-function normalizeTitleForGrouping(title) {
-  if (!title || typeof title !== "string") {
-    return "";
-  }
-  return title.trim().toLowerCase().replace(/\s+/g, " ");
-}
-
-function mergeCardsBySameTitle(tabId, pageUrl) {
-  if (!pageUrl) {
-    return false;
-  }
-  const candidates = Object.values(state.cards).filter((card) => {
-    return card.tabId === tabId
-      && card.pageUrl === pageUrl
-      && !card.ignored
-      && !retainDownloadTask(card)
-      && Array.isArray(card.variants)
-      && card.variants.length > 0;
-  });
-  if (candidates.length < 2) {
-    return false;
-  }
-
-  const groups = new Map();
-  for (const card of candidates) {
-    const titleKey = normalizeTitleForGrouping(card.title || card.pageTitle || "");
-    if (!titleKey) {
-      continue;
-    }
-    if (card.identityKey) {
-      continue;
-    }
-    const key = `${tabId}|${pageUrl}|${card.mediaKey || ""}|${titleKey}`;
-    if (!groups.has(key)) {
-      groups.set(key, []);
-    }
-    groups.get(key).push(card);
-  }
-
-  let changed = false;
-  for (const group of groups.values()) {
-    if (group.length < 2) {
-      continue;
-    }
-    group.sort((a, b) => b.updatedAt - a.updatedAt);
-    const primary = group[0];
-    const others = group.slice(1);
-
-    for (const secondary of others) {
-      for (const variant of secondary.variants) {
-        if (!primary.variants.some((item) => item.id === variant.id)) {
-          primary.variants.push(variant);
-        }
-      }
-      if (shouldReplaceThumbnail(primary.thumbnail, secondary.thumbnail)) {
-        primary.thumbnail = secondary.thumbnail;
-      }
-      delete state.cards[secondary.id];
-      changed = true;
-    }
-
-    const deduped = dedupeVariantsBySimilarity(primary.variants);
-    if (deduped.changed) {
-      primary.variants = deduped.variants;
-      changed = true;
-    }
-    if (reconcileCardSelection(primary)) {
-      changed = true;
-    }
-    primary.updatedAt = Date.now();
-  }
-  return changed;
-}
+const mergeCardsBySameTitle = createCardMerger({ getState: () => state, normalizeTitleForGrouping, retainDownloadTask, shouldReplaceThumbnail, dedupeVariantsBySimilarity, reconcileCardSelection });
 
 function cleanupForNonPreserve(tabId, pageUrl) {
   if (settings.preserveOldPages) {
@@ -1068,13 +391,21 @@ async function ingestCandidates(candidates, context) {
   const tabInfo = await getTabInfo(tabId);
   const pageUrl = context?.pageUrl || tabInfo.url || "";
   const pageTitle = context?.pageTitle || tabInfo.title || "";
+  if (!getSitePolicy(settings, pageUrl).detection) return;
+  if (context?.scanMetrics) {
+    if (scanMetrics.size >= 100) scanMetrics.delete(scanMetrics.keys().next().value);
+    const metrics = context.scanMetrics;
+    scanMetrics.set(`${tabId}:${context.frameId || 0}`, { scans: Number(metrics.scans) || 0, skipped: Number(metrics.skipped) || 0, elapsedMs: Number(metrics.elapsedMs) || 0 });
+  }
 
   cleanupForNonPreserve(tabId, pageUrl);
 
   let changed = false;
   const expandedCandidates = await expandM3u8Candidates(candidates);
-  let tabThumbnailRequested = false;
-  let tabThumbnail = "";
+  for (const candidate of expandedCandidates) if (candidate.type === "mpd") {
+    try { const tracks = await dashDiscovery.get(candidate.url, async () => parseMpd(await fetchTextWithRetry(candidate.url, { maxBytes: 2 * 1024 * 1024, credentials: getSitePolicy(settings, pageUrl).credentials ? "include" : "omit" }), candidate.url)); candidate.audioTracks = tracks.filter((track) => track.kind === "audio").map((track) => ({ language: track.language, name: track.id, uri: track.id })); }
+    catch (error) { console.debug("DASH discovery:", error.message); }
+  }
   const touchedCardIds = new Set();
 
   for (const rawCandidate of expandedCandidates) {
@@ -1095,7 +426,7 @@ async function ingestCandidates(candidates, context) {
     if (!state.cards[cardId]) {
       state.cards[cardId] = {
         id: cardId,
-        tabId,
+        tabId, frameId: context?.frameId || 0,
         pageUrl,
         pageTitle,
         title: deriveCardTitle(rawCandidate, pageTitle),
@@ -1135,18 +466,15 @@ async function ingestCandidates(candidates, context) {
       card.mediaKey = mediaKey;
       changed = true;
     }
+    if (rawCandidate.thumbnailDebug) card.thumbnailDebug = rawCandidate.thumbnailDebug;
     if (shouldReplaceThumbnail(card.thumbnail, rawCandidate.thumbnail)) {
       card.thumbnail = rawCandidate.thumbnail;
       changed = true;
     }
     if (
-      detectedType === "m3u8" &&
       (!card.thumbnail || isPlaceholderThumbnail(card.thumbnail))
     ) {
-      if (!tabThumbnailRequested) {
-        tabThumbnailRequested = true;
-        tabThumbnail = await requestPageThumbnail(tabId);
-      }
+      const tabThumbnail = await requestPageThumbnail(tabId, context?.frameId || 0, rawCandidate.url);
       if (shouldReplaceThumbnail(card.thumbnail, tabThumbnail)) {
         card.thumbnail = tabThumbnail;
         changed = true;
@@ -1166,6 +494,7 @@ async function ingestCandidates(candidates, context) {
         card.variants.push({
           id: variantId,
           url: methodCandidate.url,
+          audioTracks: methodCandidate.audioTracks || [], subtitleTracks: methodCandidate.subtitleTracks || [], codecs: methodCandidate.codecs || "",
           audioUrl: methodCandidate.audioUrl || "",
           masterUrl: methodCandidate.masterUrl || "",
           type: detectedType,
@@ -1181,7 +510,7 @@ async function ingestCandidates(candidates, context) {
         });
         changed = true;
       } else {
-        for (const key of ["audioUrl", "masterUrl"]) {
+        for (const key of ["audioUrl", "masterUrl", "audioTracks", "subtitleTracks", "codecs"]) {
           if (methodCandidate[key] && existingVariant[key] !== methodCandidate[key]) {
             existingVariant[key] = methodCandidate[key];
             changed = true;
@@ -1241,8 +570,8 @@ function createDefaultThumbnail(type) {
   return `data:image/svg+xml;base64,${btoa(svg)}`;
 }
 
-function getPublicState(activeTabId) {
-  const filtered = getVisibleCards(Object.values(state.cards), activeTabId, settings);
+function getPublicState(activeTabId, all = false) {
+  const filtered = all ? Object.values(state.cards).filter((card) => !card.ignored) : getVisibleCards(Object.values(state.cards), activeTabId, settings);
 
   const sorted = filtered.sort((a, b) => {
     const aTimestamp = a.status === "completed"
@@ -1284,6 +613,7 @@ function getCardDebugLog(card) {
 }
 
 async function setCardStatus(cardId, patch) {
+  const previous = state.cards[cardId]?.status;
   const card = state.cards[cardId];
   if (!card) {
     return;
@@ -1322,19 +652,23 @@ async function setCardStatus(cardId, patch) {
   if (typeof patch.nativeJobId === "string") {
     card.nativeJobId = patch.nativeJobId;
   }
+  for (const key of ["bytesReceived", "totalBytes", "speed", "eta"]) if (key in patch) card[key] = patch[key];
   let historyChanged = false;
-  if (card.status === "completed" && Number.isFinite(patch.completedAt)) {
+  if (card.status === "completed" && Number.isFinite(patch.completedAt) && settings.downloadHistoryEnabled) {
     const selectedVariant = getVariantById(card, card.selectedVariantId);
     const nextHistory = recordDownloadedUrl(downloadHistory, selectedVariant?.url || "");
     historyChanged = nextHistory.length !== downloadHistory.length;
     downloadHistory = nextHistory;
   }
-  card.updatedAt = Date.now();
+  card.updatedAt = Math.max(Date.now(), (card.updatedAt || 0) + 1);
   if (historyChanged) {
     await persistDownloadHistory();
   }
-  await persistState();
+  const important = previous !== card.status || "activeDownloadId" in patch || "debugReport" in patch || historyChanged;
+  if (important) await persistState(); else stateWriter.schedule();
   broadcastStateUpdated();
+  if (card.activeDownloadId) progressMonitor.start();
+  if ((["completed", "error", "available"].includes(card.status) || (card.status === "paused" && !card.activeDownloadId && !card.nativeJobId && !getVariantById(card, card.selectedVariantId)?.isBlob)) && !startingCards.has(cardId)) downloadQueue.release(cardId);
 }
 
 function findCardByNativeJobId(jobId) {
@@ -1352,36 +686,12 @@ function findCardByNativeJobId(jobId) {
   return card;
 }
 
-function sanitizeFileName(input) {
-  return input
-    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 120) || "video";
-}
-
-function getExtensionFromType(type) {
-  const normalized = normalizeType(type);
-  if (normalized === "m3u8") {
-    return "mp4";
-  }
-  if (normalized === "mpeg") {
-    return "mpeg";
-  }
-  if (normalized) {
-    return normalized;
-  }
-  return "mp4";
-}
-
 function buildFileName(card, variant, overrideExt) {
-  const base = sanitizeFileName(card.title || "video");
-  const ext = overrideExt || getExtensionFromType(variant.type);
-  return `${base}.${ext}`;
+  return formatDownloadFileName(card, variant, overrideExt || getExtensionFromType(variant.type), settings.fileNameRule);
 }
 
 async function startNativeVariant(card, variant) {
-  const requestContext = await collectRequestContext({ card, variant });
+  const requestContext = await collectRequestContext({ card, variant, allowCookies: getSitePolicy(settings, card.pageUrl).credentials });
   const nativeJob = buildNativeJob({
     card: {
       ...card,
@@ -1390,6 +700,7 @@ async function startNativeVariant(card, variant) {
     variant,
     requestContext
   });
+  nativeJob.outputName = buildFileName(card, variant, variant.isM3u8 ? "mp4" : "");
 
   await setCardStatus(card.id, {
     status: "downloading",
@@ -1437,10 +748,21 @@ const handleNativePortMessage = createNativePortMessageHandler({
 
 const setupReleaseController = createSetupReleaseController({
   ensureNativePort,
+  isEnabled: () => settings.nativeHelperEnabled,
   isNativeHostConnected
 });
 
 async function fallbackNativeDownload(card, message) {
+  const previous = downloadOperations.get(card.id);
+  if (previous) await previous.done;
+  if (card.status === "paused") {
+    await setCardStatus(card.id, { nativeJobId: "", stage: "Native host disconnected; resume saved segments" });
+    return;
+  }
+  if (card.status !== "downloading") return;
+  const operation = downloadOperations.begin(card.id);
+  startingCards.add(card.id);
+  try {
   const variantId = card.selectedVariantId;
   const log = getCardDebugLog(card) || createCardDebugLog(card, getVariantById(card, variantId));
   addDebugEntry(log, "warn", "native", "Native download failed; using extension fallback", { error: message.error || message.message || "Native disconnected" });
@@ -1454,6 +776,7 @@ async function fallbackNativeDownload(card, message) {
     const entry = activeDownloads.get(card.activeDownloadId);
     if (entry) entry.attemptQueue = buildDownloadAttemptList(card, variantId);
   }
+  } finally { startingCards.delete(card.id); operation.finish(); if (card.status !== "downloading") downloadQueue.release(card.id); }
 }
 
 async function attemptDownloadVariant(cardId, variantId, reasonLabel) {
@@ -1469,6 +792,7 @@ async function attemptDownloadVariant(cardId, variantId, reasonLabel) {
 
   try {
     card.selectedVariantId = variant.id;
+    throwIfAborted(downloadOperations.get(card.id)?.controller.signal);
     const log = getCardDebugLog(card) || createCardDebugLog(card, variant);
     addDebugEntry(log, "info", "attempt", "Starting download method", { variantId, reasonLabel });
     await setCardStatus(card.id, {
@@ -1485,12 +809,14 @@ async function attemptDownloadVariant(cardId, variantId, reasonLabel) {
       await downloadBlobVariant(card, variant);
       return { ok: true, pending: false };
     }
-    if (reasonLabel !== "extension-fallback" && shouldUseNativeDownload(variant)) {
+    if (settings.nativeHelperEnabled && getSitePolicy(settings, card.pageUrl).native && !card.streamOptions?.audioOnly && !card.streamOptions?.audioLanguage && !card.streamOptions?.liveSeconds && variant.type !== "mpd" && reasonLabel !== "extension-fallback" && shouldUseNativeDownload(variant)) {
       try {
         await ensureNativePort();
+        throwIfAborted(downloadOperations.get(card.id)?.controller.signal);
         await startNativeVariant(card, variant);
         return { ok: true, pending: true };
       } catch (nativeError) {
+        if (nativeError?.name === "AbortError") throw nativeError;
         const nativeMessage = nativeError instanceof Error ? nativeError.message : String(nativeError);
         await setCardStatus(card.id, {
           status: "downloading",
@@ -1508,16 +834,28 @@ async function attemptDownloadVariant(cardId, variantId, reasonLabel) {
         });
       }
     }
+    if (variant.type === "mpd") {
+      await downloadDashVariant(card, variant, downloadOperations.get(card.id)?.controller.signal);
+      return { ok: true, pending: true };
+    }
     if (variant.isM3u8) {
-      await downloadM3u8Variant(card, variant);
+      await downloadM3u8Variant(card, variant, downloadOperations.get(card.id)?.controller.signal);
       return { ok: true, pending: true };
     }
 
+    throwIfAborted(downloadOperations.get(card.id)?.controller.signal);
     await downloadDirectVariant(card, variant, {
       reasonLabel
     });
     return { ok: true, pending: true };
   } catch (error) {
+    if (error?.name === "AbortError") {
+      const action = error.action || "cancel";
+      addDebugEntry(getCardDebugLog(card), "info", "control", "Download operation stopped", { action });
+      const stopped = { status: action === "pause" ? "paused" : "available", stage: action === "pause" ? "Download paused" : "Download cancelled", activeDownloadId: 0, error: "" };
+      await setCardStatus(card.id, { ...stopped, debugReport: buildDebugReport({ card: { ...card, ...stopped }, log: finalizeDebugLog(getCardDebugLog(card), action === "pause" ? "paused" : "cancelled") }) });
+      return { ok: true, pending: false };
+    }
     const finalError = error instanceof Error ? error.message : String(error);
     const log = getCardDebugLog(card);
     addDebugEntry(log, "error", "attempt", "Download method failed", { variantId, error: finalError });
@@ -1560,23 +898,49 @@ async function executeDownloadAttempts(cardId, attempts, startIndex = 0) {
   throw new Error(lastError);
 }
 
-async function startDownload(cardId, variantId) {
+async function startDownload(cardId, variantId, options) {
   await ensureInitialized();
   const card = state.cards[cardId];
-  if (!card) {
-    throw new Error("Card not found");
-  }
+  if (!card) throw new Error("Card not found");
   const variant = card.variants.find((item) => item.id === variantId) || card.variants.find((item) => item.id === card.selectedVariantId);
-  if (!variant) {
-    throw new Error("Variant not found");
+  if (!variant) throw new Error("Variant not found");
+  if (downloadQueue.has(cardId) || startingCards.has(cardId) || ["queued", "downloading", "paused"].includes(card.status)) throw new Error("Download already in progress; use Resume");
+  card.streamOptions = normalizeStreamOptions(options || card.streamOptions);
+  card.requestCredentials = getSitePolicy(settings, card.pageUrl).credentials ? "include" : "omit";
+  if ((card.streamOptions.audioOnly || card.streamOptions.audioLanguage || card.streamOptions.liveSeconds) && !variant.isM3u8 && variant.type !== "mpd") throw new Error("Track selection and timed saving require HLS or DASH");
+  card.selectedVariantId = variant.id;
+  createCardDebugLog(card, variant);
+  await setCardStatus(cardId, { status: "queued", stage: "Queued", progress: 0, error: "" });
+  const entry = downloadQueue.enqueue(cardId, Math.max(...card.variants.map((variant) => reservationFor(variant, card))), async () => {
+    startingCards.add(cardId);
+    const operation = downloadOperations.begin(cardId);
+    try { await executeDownloadAttempts(card.id, (card.streamOptions.audioOnly || card.streamOptions.audioLanguage || card.streamOptions.liveSeconds || variant.type === "mpd" ? [variant.id] : buildDownloadAttemptList(card, variant.id)), 0); }
+    finally {
+      startingCards.delete(cardId); operation.finish();
+      if (card.status !== "downloading") downloadQueue.release(cardId);
+    }
+  }, async (error) => { await setCardStatus(cardId, { status: "error", stage: "Download failed", error: String(error.message || error) }); downloadQueue.release(cardId); });
+  if (entry.started) await entry.done;
+}
+
+const controlActiveDownload = createDownloadControls({
+  getCard: (id) => state.cards[id], operations: downloadOperations,
+  setCardStatus, startDownload, getCardDebugLog, sendNativeCommand, activeDownloads
+});
+
+async function controlDownload(cardId, action) {
+  const card = state.cards[cardId];
+  if (card?.status === "queued" && ["cancel", "pause"].includes(action)) {
+    if (!downloadQueue.cancel(cardId)) throw new Error("Task is starting; retry control");
+    if (action === "cancel" && (getVariantById(card, card.selectedVariantId)?.isM3u8 || getVariantById(card, card.selectedVariantId)?.type === "mpd")) await clearSegmentCheckpoint(cardId);
+    const log = getCardDebugLog(card);
+    addDebugEntry(log, "info", "control", "Queued task stopped", { action });
+    const patch = { status: action === "pause" ? "paused" : "available", stage: action === "pause" ? "Download paused" : "Download cancelled" };
+    await setCardStatus(cardId, { ...patch, debugReport: buildDebugReport({ card: { ...card, ...patch }, log: finalizeDebugLog(log, action === "pause" ? "paused" : "cancelled") }) });
+    return;
   }
-  if (startingCards.has(cardId) || card.status === "downloading") throw new Error("Download already in progress");
-  startingCards.add(cardId);
-  try {
-    createCardDebugLog(card, variant);
-    const attempts = buildDownloadAttemptList(card, variant.id);
-    await executeDownloadAttempts(card.id, attempts, 0);
-  } finally { startingCards.delete(cardId); }
+  await controlActiveDownload(cardId, action);
+  if (card && (card.status === "available" || (card.status === "paused" && !card.activeDownloadId && !card.nativeJobId && !getVariantById(card, card.selectedVariantId)?.isBlob))) downloadQueue.release(cardId);
 }
 
 async function exportCardRecord(card) {
@@ -1594,7 +958,8 @@ async function exportCardRecord(card) {
 
 async function downloadDirectVariant(card, variant, context) {
   const filename = buildFileName(card, variant);
-  const downloadId = await startDirectBrowserDownload(chrome.downloads, {
+  const credentialFree = card.requestCredentials === "omit" ? await downloadWithoutCredentials(variant.url, filename, card.id, downloadOperations.get(card.id)?.controller.signal) : null;
+  const downloadId = credentialFree?.downloadId || await startDirectBrowserDownload(chrome.downloads, {
     url: variant.url,
     filename
   });
@@ -1608,6 +973,7 @@ async function downloadDirectVariant(card, variant, context) {
     totalBytes: 0,
     variantId: variant.id,
     reasonLabel: typeof context?.reasonLabel === "string" ? context.reasonLabel : "manual",
+    objectUrl: credentialFree?.objectUrl,
     attemptQueue: Array.isArray(context?.attemptQueue) ? [...context.attemptQueue] : [variant.id],
     attemptIndex: Number.isInteger(context?.attemptIndex) ? context.attemptIndex : 0
   });
@@ -1618,20 +984,23 @@ async function downloadDirectVariant(card, variant, context) {
     stage: "Browser download started",
     downloadMode: "direct-copy",
     activeDownloadId: downloadId,
+    activeObjectUrl: credentialFree?.objectUrl || "",
+    lastValidation: credentialFree?.validation || null,
     error: ""
   });
 }
 
 async function downloadBlobVariant(card, variant) {
-  const filenameBase = sanitizeFileName(card.title || "video");
+  const filenameBase = buildFileName(card, variant, "webm").replace(/\.webm$/, "");
   const response = await requestBlobDownload(card.tabId, {
     cardId: card.id,
     blobUrl: variant.url,
     filenameBase,
     methodFamily: getVariantMethodFamily(variant)
-  });
+  }, card.frameId || 0);
 
   if (!response || response.ok !== true) {
+    if (response?.cancelled) throw operationError();
     throw new Error(response?.error || "Unable to start blob download. Try Rescan and play the video first.");
   }
 
@@ -1677,7 +1046,9 @@ async function discoverMasterVariants(candidate) {
 
     if (!/^#EXT-X-STREAM-INF/im.test(text)) {
       const guessed = await discoverMasterFromGuesses(candidate.url);
-      if (!guessed) {
+      // A neighboring master can describe a different video or a VOD beside a live feed.
+      const matchesSource = guessed && parseMasterPlaylistModule(guessed.text, guessed.url).some((option) => normalizeDownloadHistoryUrl(option.url) === normalizeDownloadHistoryUrl(fetched.url));
+      if (!matchesSource) {
         m3u8MasterCache.set(candidate.url, { cachedAt: now, options: [], baseUrl: candidate.url });
         return [];
       }
@@ -1778,7 +1149,7 @@ async function updateVariantSelection(cardId, variantId) {
   if (!card) {
     return;
   }
-  if (card.status === "downloading") return;
+  if (["downloading", "paused"].includes(card.status)) return;
   if (!card.variants.some((variant) => variant.id === variantId)) {
     return;
   }
@@ -1791,21 +1162,26 @@ async function updateVariantSelection(cardId, variantId) {
 
 async function clearAllCache(keepSettings) {
   await ensureInitialized();
-  if (Object.values(state.cards).some((card) => card.status === "downloading")) throw new Error("Wait for active downloads before clearing cache");
+  if (Object.values(state.cards).some((card) => ["queued", "downloading", "paused"].includes(card.status))) throw new Error("Wait for active downloads before clearing cache");
   const retainedSettings = keepSettings ? structuredClone(settings) : structuredClone(DEFAULT_SETTINGS);
   activeDownloads.clear();
   m3u8MasterCache.clear();
+  dashDiscovery.clear();
   pageThumbnailCache.clear();
   tabMeta.clear();
   state = createEmptyState();
   downloadHistory = [];
   settings = retainedSettings;
 
+  await stateWriter.flush();
+  await collectTemporaryFiles(state.cards);
+
   await chrome.storage.local.clear();
   await chrome.storage.local.set({
     [STATE_KEY]: state,
     [SETTINGS_KEY]: settings,
-    [DOWNLOAD_HISTORY_KEY]: downloadHistory
+    [DOWNLOAD_HISTORY_KEY]: downloadHistory,
+    vd_history_identity_version: 2
   });
 
   try {
@@ -1830,6 +1206,7 @@ async function triggerRescan(tabId) {
 async function updateSettings(nextSettings) {
   await ensureInitialized();
   settings = cloneSettingsWithDefaults(nextSettings);
+  downloadQueue.configure(settings.maxActiveDownloads);
   await persistSettings();
 
   let changed = false;
@@ -1946,119 +1323,7 @@ chrome.webRequest.onHeadersReceived.addListener(
   ["responseHeaders"]
 );
 
-chrome.downloads.onChanged.addListener(async (delta) => {
-  await ensureInitialized();
-  let entry = activeDownloads.get(delta.id);
-  if (!entry) {
-    const card = Object.values(state.cards).find((item) => item.activeDownloadId === delta.id);
-    if (card) {
-      entry = {
-        cardId: card.id,
-        totalBytes: 0,
-        variantId: card.selectedVariantId,
-        reasonLabel: "resume",
-        objectUrl: card.activeObjectUrl,
-        downloadMode: card.downloadMode,
-        attemptQueue: buildDownloadAttemptList(card, card.selectedVariantId),
-        attemptIndex: 0
-      };
-      activeDownloads.set(delta.id, entry);
-    }
-  }
-  if (!entry) {
-    return;
-  }
-
-  if (delta.totalBytes?.current) {
-    entry.totalBytes = delta.totalBytes.current;
-  }
-
-  if (delta.bytesReceived?.current && entry.totalBytes > 0) {
-    const progress = clamp((delta.bytesReceived.current / entry.totalBytes) * 100, 0, 99);
-    await setCardStatus(entry.cardId, {
-      status: "downloading",
-      progress,
-      stage: "Browser downloading",
-      error: ""
-    });
-  }
-
-  if (["complete", "interrupted"].includes(delta.state?.current)) {
-    await releaseRemuxUrl(entry.objectUrl);
-  }
-  if (delta.state?.current === "complete") {
-    let item = null;
-    try {
-      const items = await chrome.downloads.search({ id: delta.id });
-      item = Array.isArray(items) ? items[0] : null;
-    } catch {
-      item = null;
-    }
-    const card = state.cards[entry.cardId];
-    const attemptedVariant = card ? getVariantById(card, entry.variantId) : null;
-    const isVideo = isProbablyVideoDownloadItem(item, attemptedVariant);
-    if (!isVideo) {
-      await tryRemoveDownloadedFile(delta.id);
-      activeDownloads.delete(delta.id);
-      const fallbackVariantId = entry.attemptQueue?.[entry.attemptIndex + 1];
-      if (fallbackVariantId) {
-        try {
-          await executeDownloadAttempts(entry.cardId, entry.attemptQueue, entry.attemptIndex + 1);
-          return;
-        } catch {
-          // Fall through to final error below.
-        }
-      }
-      await setCardStatus(entry.cardId, {
-        status: "error",
-        stage: "Selected method returned a non-video file",
-        activeDownloadId: 0,
-        error: "The selected download method completed, but the saved file was not a video."
-      });
-      return;
-    }
-
-    const completedLog = card ? getCardDebugLog(card) : null;
-    addDebugEntry(completedLog, "info", "save", "Browser confirmed download completion", { downloadId: delta.id, fileSize: item?.fileSize });
-    await setCardStatus(entry.cardId, {
-      debugReport: buildDebugReport({ card: { ...card, status: "completed", stage: "Completed", error: "" }, log: finalizeDebugLog(completedLog, "completed") }),
-      status: "completed",
-      progress: 100,
-      stage: "Completed",
-      downloadMode: entry.downloadMode || "direct-copy",
-      activeObjectUrl: "",
-      error: "",
-      activeDownloadId: 0,
-      completedAt: Date.now()
-    });
-
-    activeDownloads.delete(delta.id);
-  }
-
-  if (delta.state?.current === "interrupted") {
-    activeDownloads.delete(delta.id);
-    if (delta.error?.current === "USER_CANCELED") {
-      await setCardStatus(entry.cardId, { status: "available", progress: 0, stage: "Download cancelled", activeDownloadId: 0, activeObjectUrl: "", error: "" });
-      return;
-    }
-    const fallbackVariantId = entry.attemptQueue?.[entry.attemptIndex + 1];
-    if (fallbackVariantId) {
-      try {
-        await executeDownloadAttempts(entry.cardId, entry.attemptQueue, entry.attemptIndex + 1);
-        return;
-      } catch {
-        // Fall through to final interrupted state below.
-      }
-    }
-    await setCardStatus(entry.cardId, {
-      status: "error",
-      stage: "Selected method interrupted",
-      activeDownloadId: 0,
-      error: delta.error?.current || "Unknown download interruption"
-    });
-    return;
-  }
-});
+chrome.downloads.onChanged.addListener(createDownloadEventHandler({ getState: () => state, ensureInitialized, activeDownloads, buildDownloadAttemptList, setCardStatus, clamp, releaseRemuxUrl, getVariantById, isProbablyVideoDownloadItem, tryRemoveDownloadedFile, executeDownloadAttempts: executeReservedAttempts, getCardDebugLog, addDebugEntry, buildDebugReport, finalizeDebugLog, clearSegmentCheckpoint }));
 
 let nativeEventQueue = Promise.resolve();
 addNativePortListener((message) => {
@@ -2068,9 +1333,37 @@ addNativePortListener((message) => {
 const handleRuntimeMessage = createRuntimeMessageHandler({
   ensureInitialized,
   getSettings: () => settings,
-  getPublicState,
+  getPublicState: (tabId, message) => message?.compact ? compactPublicState(getPublicState(tabId, message.all), message.versions) : getPublicState(tabId, message?.all),
+  managementAction: async (message) => {
+    switch (message.type) {
+      case "NATIVE_HEALTH": return checkNativeHealth();
+      case "RESCAN_ALL": {
+        const tabs = await chrome.tabs.query({}); dashDiscovery.clear(); m3u8MasterCache.clear();
+        const results = await Promise.all(tabs.filter((tab) => /^https?:/.test(tab.url || "") && getSitePolicy(settings, tab.url).detection).map((tab) => triggerRescan(tab.id)));
+        return { scanned: results.filter(Boolean).length };
+      }
+      case "STORAGE_MANAGER": return storageManager(message.action || "stats", message.cardId);
+      case "PRIORITIZE_TASK": downloadQueue.prioritize(message.cardId); return downloadQueue.snapshot;
+      case "DISCOVERY_METRICS": return { dash: dashDiscovery.metrics, frames: Object.fromEntries(scanMetrics) };
+      case "MEDIA_PREVIEW": { const card = state.cards[message.cardId]; if (!card) throw new Error("Card not found"); card.requestCredentials = getSitePolicy(settings, card.pageUrl).credentials ? "include" : "omit"; return previewMedia(card, getVariantById(card, message.variantId || card.selectedVariantId)); }
+      case "HISTORY_LIST": return downloadHistory;
+      case "RECOVER_SOURCE": {
+        const card = state.cards[message.cardId]; if (!card) throw new Error("Card not found");
+        dashDiscovery.clear(); m3u8MasterCache.clear();
+        let tab; try { tab = await chrome.tabs.get(card.tabId); } catch { /* Closed source. */ }
+        if (tab?.url === card.pageUrl) { await chrome.tabs.update(card.tabId, { active: true }); await triggerRescan(card.tabId); }
+        else { if (!/^https?:/.test(card.pageUrl)) throw new Error("Source page URL unavailable"); await chrome.tabs.create({ url: card.pageUrl }); }
+        return { rescan: true };
+      }
+      case "HISTORY_DELETE": downloadHistory = downloadHistory.filter((url) => url !== message.url); await persistDownloadHistory(); broadcastStateUpdated(); return downloadHistory;
+      default: throw new Error("Unknown management action");
+    }
+  },
+  downloadSubtitle: (cardId, uri) => downloadSubtitle(state.cards[cardId], uri, buildFileName),
+  getQueueState: () => downloadQueue.snapshot,
   getSetupState: (forceRefresh) => setupReleaseController.getSetupState(forceRefresh),
   updateSettings,
+  controlDownload,
   ingestCandidates,
   startDownload,
   updateVariantSelection,
@@ -2085,7 +1378,7 @@ const handleRuntimeMessage = createRuntimeMessageHandler({
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.target === "offscreen" || message?.type === "STATE_UPDATED") return false;
-  handleRuntimeMessage(message, sender)
+  (message?.type === "CAPTURE_PLAYER_VIEW" ? capturePlayerView(sender) : handleRuntimeMessage(message, sender))
     .then((result) => sendResponse(result))
     .catch((error) => {
       sendResponse({
@@ -2096,30 +1389,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   return true;
 });
-import { createMediaDebugLog, addDebugEntry, finalizeDebugLog, setDebugSummary } from "./core/debug/media-debug-log.js";
-import { buildDebugReport } from "./core/debug/export-debug-report.js";
-import { applyDownloadHistory, normalizeDownloadHistoryUrl, recordDownloadedUrl } from "./core/history/download-history.js";
-import { parseMasterPlaylist as parseMasterPlaylistModule, choosePreferredMasterOption as choosePreferredMasterOptionModule, chooseAudioTrack, buildMasterVariantLabel as buildMasterVariantLabelModule } from "./core/hls/parse-master.js";
-import { fetchTextWithRetry } from "./core/hls/download-segments.js";
-import { releaseRemuxUrl } from "./core/files/save-remux.js";
-import { startDirectBrowserDownload } from "./core/download-direct.js";
-import { requestBlobDownload } from "./core/download-blob.js";
-import { expandCandidateDownloadMethods, getVariantMethodFamily, normalizeMethodFamily } from "./core/download-methods.js";
-import { collectRequestContext } from "./extension/background/request-context.js";
-import { shouldUseNativeDownload, getNativeDownloadMode } from "./extension/background/job-dispatcher.js";
-import { exportCardRecord as exportCardRecordFile } from "./extension/background/export-record.js";
-import { createNativePortMessageHandler } from "./extension/background/native-events.js";
-import { addNativePortListener, ensureNativePort, isNativeHostConnected, sendNativeCommand } from "./extension/background/native-port.js";
-import { createSetupReleaseController } from "./extension/background/setup-release.js";
-import { createRuntimeMessageHandler } from "./extension/background/runtime-router.js";
-import { buildNativeJob } from "./extension/native/normalize-job.js";
-import { EVENT_TYPES, REQUEST_TYPES, createRequestId } from "./extension/native/protocol.js";
 
-import { createHlsDownloader } from "./extension/background/hls-pipeline.js";
+const reservationFor = (variant, card) => variant?.isM3u8 || variant?.isBlob || variant?.type === "mpd" ? STREAM_RESERVATION : card?.requestCredentials === "omit" ? 64 * 1024 * 1024 : DIRECT_RESERVATION;
+const downloadQueue = createDownloadQueue({ onEvent: (event, details) => addDebugEntry(getCardDebugLog(state.cards[details.id]), "info", "queue", event, details) });
+const dashDiscovery = createDiscoveryCache();
+const scanMetrics = new Map();
+const storageManager = createStorageManager(() => state.cards);
+const stateWriter = createStateWriter(() => chrome.storage.local.set({ [STATE_KEY]: structuredClone(state) }));
+const progressMonitor = createDownloadProgressMonitor({ getCards: () => Object.values(state.cards), downloads: chrome.downloads, setCardStatus });
+const downloadDashVariant = createDashDownloader({ createCardDebugLog, getCardDebugLog, setCardStatus, buildFileName, activeDownloads });
+chrome.alarms?.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === "temporary-cleanup") { await ensureInitialized(); console.debug("Temporary storage cleanup", await collectTemporaryFiles(state.cards)); }
+});
 
-import { fetchPlaylist } from "./core/hls/fetch-playlist.js";
-
-import { expandMasterOptions } from "./core/hls/expand-master.js";
-
-import { retainDownloadTask } from "./core/history/retain-download-task.js";
-import { getVisibleCards } from "./extension/background/visible-cards.js";
+async function executeReservedAttempts(cardId, attempts, index) {
+  startingCards.add(cardId);
+  try { await executeDownloadAttempts(cardId, attempts, index); }
+  finally { startingCards.delete(cardId); if (state.cards[cardId]?.status !== "downloading") downloadQueue.release(cardId); }
+}

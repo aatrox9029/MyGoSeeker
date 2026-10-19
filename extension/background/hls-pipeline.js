@@ -2,16 +2,19 @@ import { createRetryFetchLogger, downloadMediaPlaylistResources } from "../../co
 import { fetchPlaylist } from "../../core/hls/fetch-playlist.js";
 import { parseMasterPlaylist as parseMasterPlaylistModule, choosePreferredMasterOption as choosePreferredMasterOptionModule, chooseAudioTrack } from "../../core/hls/parse-master.js";
 import { parseMediaPlaylist as parseMediaPlaylistModule } from "../../core/hls/parse-media.js";
-import { buildRemuxJob } from "../../core/hls/merge-renditions.js";
-import { remuxHlsInOffscreen } from "../../core/remux/offscreen-client.js";
-import { saveRemuxDownload, releaseRemuxUrl } from "../../core/files/save-remux.js";
 import { addDebugEntry, finalizeDebugLog, setDebugSummary } from "../../core/debug/media-debug-log.js";
 import { buildDebugReport } from "../../core/debug/export-debug-report.js";
+import { createSegmentCheckpoint, MAX_SEGMENT_BYTES } from "../../core/hls/segment-checkpoint.js";
+import { checkEstimatedStreamSize } from "../../core/downloads/stream-size.js";
 
 export function createHlsDownloader({ createCardDebugLog, getCardDebugLog, setCardStatus, buildFileName, activeDownloads }) {
-  return async function downloadM3u8Variant(card, variant) {
+  const finalize = createStreamFinalizer({ setCardStatus, buildFileName, activeDownloads });
+  return async function downloadM3u8Variant(card, variant, signal) {
   const debugLog = getCardDebugLog(card) || createCardDebugLog(card, variant);
   const logFetch = createRetryFetchLogger(debugLog, addDebugEntry);
+  const checkpoint = await createSegmentCheckpoint(card.id, variant.id, signal);
+  const fetchOptions = { signal, logger: logFetch, credentials: card.requestCredentials || "include" };
+  const rate = createTransferRateTracker();
 
   await setCardStatus(card.id, {
     status: "downloading",
@@ -24,6 +27,7 @@ export function createHlsDownloader({ createCardDebugLog, getCardDebugLog, setCa
 
   try {
     const initialPlaylist = await fetchPlaylist(variant.url, {
+      ...fetchOptions,
       logger: logFetch,
       stage: "playlist fetch",
       retries: 3
@@ -34,15 +38,18 @@ export function createHlsDownloader({ createCardDebugLog, getCardDebugLog, setCa
       isMaster: /^#EXT-X-STREAM-INF/im.test(masterText)
     });
 
-    if (/^#EXT-X-KEY:(?!.*METHOD=NONE)/im.test(masterText)) {
-      throw new Error("Encrypted m3u8 is not supported.");
-    }
-
     let videoPlaylistUrl = initialPlaylist.url;
     let videoPlaylistText = masterText;
     let audioPlaylistUrl = variant.audioUrl || "";
     let audioPlaylistText = "";
     let selectedMasterOption = null;
+    let codecs = variant.codecs || "";
+    const selectedLanguage = card.streamOptions?.audioLanguage;
+    if (selectedLanguage && variant.audioTracks?.length) {
+      const selectedTrack = variant.audioTracks.find((track) => track.language === selectedLanguage || track.uri === selectedLanguage);
+      if (!selectedTrack) throw new Error("Selected audio language is unavailable; rescan");
+      audioPlaylistUrl = selectedTrack.uri || "";
+    }
 
     if (/^#EXT-X-STREAM-INF/im.test(masterText)) {
       const options = parseMasterPlaylistModule(masterText, initialPlaylist.url);
@@ -54,7 +61,9 @@ export function createHlsDownloader({ createCardDebugLog, getCardDebugLog, setCa
         throw new Error("Unable to choose HLS stream");
       }
 
-      const audioTrack = chooseAudioTrack(selectedMasterOption.audioTracks);
+      codecs = selectedMasterOption.codecs;
+      const audioTrack = selectedLanguage ? selectedMasterOption.audioTracks.find((track) => track.language === selectedLanguage || track.uri === selectedLanguage) : chooseAudioTrack(selectedMasterOption.audioTracks);
+      if (selectedLanguage && !audioTrack) throw new Error("Selected audio language is unavailable; rescan");
       videoPlaylistUrl = selectedMasterOption.url;
       audioPlaylistUrl = audioTrack?.uri || "";
 
@@ -76,6 +85,7 @@ export function createHlsDownloader({ createCardDebugLog, getCardDebugLog, setCa
       });
 
       const videoPlaylist = await fetchPlaylist(videoPlaylistUrl, {
+        ...fetchOptions,
         logger: logFetch,
         stage: "video playlist fetch",
         retries: 3
@@ -84,6 +94,7 @@ export function createHlsDownloader({ createCardDebugLog, getCardDebugLog, setCa
       videoPlaylistUrl = videoPlaylist.url;
       if (audioPlaylistUrl) {
         const audioPlaylist = await fetchPlaylist(audioPlaylistUrl, {
+          ...fetchOptions,
           logger: logFetch,
           stage: "audio playlist fetch",
           retries: 3
@@ -93,20 +104,30 @@ export function createHlsDownloader({ createCardDebugLog, getCardDebugLog, setCa
       }
     }
 
-    if (/^#EXT-X-KEY:(?!.*METHOD=NONE)/im.test(videoPlaylistText) || /^#EXT-X-KEY:(?!.*METHOD=NONE)/im.test(audioPlaylistText)) {
-      throw new Error("Encrypted media playlist is not supported.");
-    }
-
     if (audioPlaylistUrl && !audioPlaylistText) {
-      const audioPlaylist = await fetchPlaylist(audioPlaylistUrl, { logger: logFetch, stage: "audio playlist fetch" });
+      const audioPlaylist = await fetchPlaylist(audioPlaylistUrl, { ...fetchOptions, stage: "audio playlist fetch" });
       audioPlaylistText = audioPlaylist.text;
       audioPlaylistUrl = audioPlaylist.url;
     }
-    const videoPlaylistInfo = parseMediaPlaylistModule(videoPlaylistText, videoPlaylistUrl);
-    const audioPlaylistInfo = audioPlaylistText ? parseMediaPlaylistModule(audioPlaylistText, audioPlaylistUrl) : null;
-    if (videoPlaylistInfo.encrypted || audioPlaylistInfo?.encrypted) throw new Error("Encrypted media playlist is not supported.");
+    if (card.streamOptions?.audioOnly && audioPlaylistText) { videoPlaylistText = audioPlaylistText; videoPlaylistUrl = audioPlaylistUrl; audioPlaylistText = ""; audioPlaylistUrl = ""; codecs = codecs.split(",").filter((codec) => /mp4a|aac|ac-3|ec-3|opus|vorbis|flac|alac/.test(codec)).join(","); }
+    let videoPlaylistInfo = parseMediaPlaylistModule(videoPlaylistText, videoPlaylistUrl);
+    let audioPlaylistInfo = audioPlaylistText ? parseMediaPlaylistModule(audioPlaylistText, audioPlaylistUrl) : null;
+    addDebugEntry(debugLog, "info", "hls-decrypt", "HLS encryption analysis", {
+      videoEncrypted: videoPlaylistInfo.encrypted, audioEncrypted: Boolean(audioPlaylistInfo?.encrypted),
+      videoEncryptedSegments: videoPlaylistInfo.segments.filter((item) => item.encryption).length,
+      audioEncryptedSegments: audioPlaylistInfo?.segments.filter((item) => item.encryption).length || 0
+    });
+    let capturedVideo, capturedAudio;
     if (!videoPlaylistInfo.isEndList || (audioPlaylistInfo && !audioPlaylistInfo.isEndList)) {
-      throw new Error("Live HLS is not a complete video. Use Record for playback capture.");
+      if (!card.streamOptions?.liveSeconds) throw new Error("Live HLS has no completed playlist; use Record or select a completed video.");
+      // New clip on resume: an old sliding window cannot be restored reliably.
+      await clearSegmentCheckpoint(card.id);
+      [capturedVideo, capturedAudio] = await Promise.all([
+        captureLivePlaylist(videoPlaylistUrl, videoPlaylistText, card.streamOptions.liveSeconds, { ...fetchOptions, checkpoint, maxBytes: MAX_SEGMENT_BYTES, stagePrefix: "video", onProgress: (done, total) => setCardStatus(card.id, { progress: 22 + done / total * 40, stage: `Saving live HLS ${Math.round(done)}/${total}s` }).catch(console.error) }),
+        audioPlaylistInfo ? captureLivePlaylist(audioPlaylistUrl, audioPlaylistText, card.streamOptions.liveSeconds, { ...fetchOptions, checkpoint, maxBytes: MAX_SEGMENT_BYTES, stagePrefix: "audio" }) : null
+      ]);
+      videoPlaylistText = capturedVideo.text; videoPlaylistInfo = capturedVideo.info;
+      if (capturedAudio) { audioPlaylistText = capturedAudio.text; audioPlaylistInfo = capturedAudio.info; }
     }
     if (videoPlaylistInfo.segments.length === 0) {
       throw new Error("No media segments found in HLS video playlist");
@@ -134,99 +155,31 @@ export function createHlsDownloader({ createCardDebugLog, getCardDebugLog, setCa
       error: ""
     });
 
-    const videoResources = await downloadMediaPlaylistResources(videoPlaylistInfo, {
+    checkEstimatedStreamSize((selectedMasterOption?.bandwidth || 0) * videoPlaylistInfo.totalDuration / 8, logFetch);
+    const videoResources = capturedVideo?.resources || await downloadMediaPlaylistResources(videoPlaylistInfo, {
+      ...fetchOptions, checkpoint, maxBytes: MAX_SEGMENT_BYTES,
       logger: logFetch,
       stagePrefix: "video",
       retries: 3,
       onProgress: (done, total) => {
         if (done % 10 === 0 || done === total) setCardStatus(card.id, {
+          ...rate(checkpoint.totalBytes, done, total),
           progress: 22 + done / total * (audioPlaylistInfo ? 25 : 43), stage: `Downloading video segments ${done}/${total}`
         }).catch(console.error);
       }
     });
     const audioResources = audioPlaylistInfo
-      ? await downloadMediaPlaylistResources(audioPlaylistInfo, {
+      ? capturedAudio?.resources || await downloadMediaPlaylistResources(audioPlaylistInfo, {
+          ...fetchOptions, checkpoint, maxBytes: MAX_SEGMENT_BYTES,
           logger: logFetch,
           stagePrefix: "audio",
           retries: 3
         })
       : [];
 
-    const outputExt = "mp4";
-    const filename = buildFileName(card, variant, outputExt);
-    const remuxJob = buildRemuxJob({
-      videoPlaylistText,
-      videoPlaylistInfo,
-      videoResources,
-      audioPlaylistText,
-      audioPlaylistInfo,
-      audioResources,
-      outputFileName: filename
-    });
-    remuxJob.expectedDuration = Math.max(videoPlaylistInfo.totalDuration || 0, audioPlaylistInfo?.totalDuration || 0);
-    remuxJob.cardId = card.id;
+    await finalize({ card, variant, video: { text: videoPlaylistText, info: videoPlaylistInfo, resources: videoResources },
+      audio: audioPlaylistInfo ? { text: audioPlaylistText, info: audioPlaylistInfo, resources: audioResources } : null, codecs, debugLog, signal });
 
-    await setCardStatus(card.id, {
-      status: "downloading",
-      progress: 68,
-      stage: audioPlaylistInfo ? "Remuxing video/audio and moving moov to front" : "Remuxing HLS and moving moov to front",
-      error: ""
-    });
-
-    let remuxResult = null;
-    let remuxError = null;
-    for (let remuxAttempt = 1; remuxAttempt <= 2; remuxAttempt += 1) {
-      try {
-        addDebugEntry(debugLog, "info", "remux", "Starting FFmpeg remux", { remuxAttempt });
-        remuxResult = await remuxHlsInOffscreen(remuxJob);
-        remuxError = null;
-        break;
-      } catch (error) {
-        remuxError = error instanceof Error ? error : new Error(String(error));
-        addDebugEntry(debugLog, "warn", "remux", "Remux attempt failed", {
-          remuxAttempt,
-          error: remuxError.message
-        });
-      }
-    }
-    if (remuxError || !remuxResult) {
-      throw remuxError || new Error("Remux failed");
-    }
-    if (!remuxResult.validation?.ok) {
-      throw new Error("Finalized media validation failed");
-    }
-
-    addDebugEntry(debugLog, "info", "validation", "Finalized media validated", remuxResult.validation);
-    addDebugEntry(debugLog, "info", "remux", "FFmpeg output", { lines: remuxResult.diagnostics });
-
-    let downloadId;
-    try { downloadId = await saveRemuxDownload(chrome.downloads, remuxResult, filename); }
-    catch (error) { await releaseRemuxUrl(remuxResult.objectUrl); throw error; }
-    activeDownloads.set(downloadId, {
-      cardId: card.id, variantId: variant.id, totalBytes: 0,
-      objectUrl: remuxResult.objectUrl,
-      downloadMode: audioPlaylistInfo ? "remuxed-source-av" : "remuxed-source",
-      attemptQueue: [variant.id], attemptIndex: 0
-    });
-    await setCardStatus(card.id, {
-      status: "downloading",
-      progress: 95,
-      stage: "Saving finalized MP4",
-      downloadMode: audioPlaylistInfo ? "remuxed-source-av" : "remuxed-source",
-      activeDownloadId: downloadId,
-      activeObjectUrl: remuxResult.objectUrl,
-      error: "",
-      lastValidation: remuxResult.validation,
-      debugReport: buildDebugReport({
-        card,
-        log: finalizeDebugLog(debugLog, "saving", {
-          fileName: filename,
-          validation: remuxResult.validation,
-          outputContainer: remuxResult.container,
-          saveMode: "browser-download"
-        })
-      })
-    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const report = buildDebugReport({
@@ -245,3 +198,9 @@ export function createHlsDownloader({ createCardDebugLog, getCardDebugLog, setCa
   }
 };
 }
+
+import { createStreamFinalizer } from "./finalize-stream.js";
+import { captureLivePlaylist } from "../../core/hls/capture-live.js";
+import { clearSegmentCheckpoint } from "../../core/hls/segment-checkpoint.js";
+
+import { createTransferRateTracker } from "../../core/downloads/transfer-rate.js";

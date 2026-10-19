@@ -1,6 +1,7 @@
 // Uses a temporary Chromium profile and local synthetic media; never touches the user's browser.
 import { chromium } from "@playwright/test";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { browserLaunchOptions } from "./browser-launch-options.mjs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -19,6 +20,14 @@ ffmpeg(["-i", join(mediaDir, "direct.mp4"), "-an", "-c:v", "copy", "-hls_time", 
 ffmpeg(["-i", join(mediaDir, "direct.mp4"), "-vn", "-c:a", "copy", "-hls_time", "1", "-hls_list_size", "0", join(mediaDir, "audio.m3u8")]);
 writeFileSync(join(mediaDir, "master.m3u8"), '#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Test audio",DEFAULT=YES,URI="audio.m3u8"\n#EXT-X-STREAM-INF:BANDWIDTH=200000,RESOLUTION=160x90,CODECS="avc1.64000a,mp4a.40.2",AUDIO="audio"\nvideo.m3u8\n');
 let retried = false;
+// Exercise actual WASM demuxing of image-suffixed fMP4 init/ranges and TS audio.
+for (const playlist of ["video.m3u8", "audio.m3u8"]) {
+  const text = readFileSync(join(mediaDir, playlist), "utf8").replace(/[\w-]+\.(?:mp4|m4s|ts)/g, (name) => {
+    copyFileSync(join(mediaDir, name), join(mediaDir, `${name}.jpg`));
+    return `${name}.jpg`;
+  });
+  writeFileSync(join(mediaDir, playlist), text);
+}
 const server = createServer((req, res) => {
   const path = new URL(req.url, "http://local").pathname;
   if (path === "/favicon.ico") { res.writeHead(204); res.end(); return; }
@@ -35,7 +44,7 @@ const server = createServer((req, res) => {
   if (path === "/redirect.m3u8") { res.writeHead(302, { location: "/nested/master.m3u8" }); res.end(); return; }
   const fileName = path.split('/').at(-1);
   if (fileName !== "direct.mp4" && !path.startsWith("/nested/")) { res.writeHead(404); res.end(); return; }
-  if (fileName === "audio0.ts" && !retried) { retried = true; res.writeHead(503); res.end("retry"); return; }
+  if (fileName === "audio0.ts.jpg" && !retried) { retried = true; res.writeHead(503); res.end("retry"); return; }
   try {
     const data = readFileSync(join(mediaDir, fileName));
     res.setHeader("content-type", fileName.endsWith("m3u8") ? "application/vnd.apple.mpegurl" : fileName.endsWith("ts") ? "video/mp2t" : "video/mp4");
@@ -52,7 +61,7 @@ const errors = [];
 let context;
 try {
   context = await chromium.launchPersistentContext(join(work, "profile"), {
-    channel: "chromium", headless: true, acceptDownloads: true, downloadsPath: join(work, "downloads"),
+    ...browserLaunchOptions(), headless: true, acceptDownloads: true, downloadsPath: join(work, "downloads"),
     args: [`--disable-extensions-except=${root}`, `--load-extension=${root}`]
   });
   context.on("page", (page) => {
@@ -70,13 +79,45 @@ try {
   const popup = await context.newPage();
   popup.on("pageerror", (error) => errors.push(error.message));
   await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+  await popup.waitForFunction(() => document.getElementById("setupBannerText").textContent.includes("optional and disabled"));
+  assert.ok(await popup.locator("#setupDownloadBtn").isHidden(), "Disabled optional helper should not prompt installation");
   const call = (message) => popup.evaluate((message) => chrome.runtime.sendMessage(message), message);
+  const options = await context.newPage();
+  await options.goto(`chrome-extension://${extensionId}/options.html`);
+  await options.waitForFunction(() => document.getElementById("extensionId").value.length === 32);
+  assert.equal(await options.locator("#nativeHelperEnabled").isChecked(), false);
+  assert.equal(await options.locator("#extensionId").inputValue(), extensionId);
+  await options.locator("#nativeHelperEnabled").check();
+  await options.locator("#saveBtn").click();
+  await options.waitForFunction(() => document.getElementById("statusText").textContent.includes("saved"));
+  assert.equal((await call({ type: "GET_SETTINGS" })).data.nativeHelperEnabled, true);
+  await popup.locator("#setupRefreshBtn").click();
+  await popup.waitForFunction(() => !document.getElementById("setupDownloadBtn").disabled);
+  assert.ok(await popup.locator("#setupDownloadBtn").isVisible());
+  await options.close();
   const tabs = await popup.evaluate(() => chrome.tabs.query({}));
   const tabId = tabs.find((tab) => tab.url.startsWith(base)).id;
   await new Promise((resolve) => setTimeout(resolve, 1500));
   let cards = (await call({ type: "GET_STATE", activeTabId: tabId })).data.cards;
   assert.ok(cards.some((card) => card.variants.some((v) => v.url.endsWith("direct.mp4"))), "DOM/network detection failed");
   const direct = cards.find((card) => card.variants.some((v) => v.url.endsWith("direct.mp4")));
+  // Decode the stored thumbnail and inspect pixels; a placeholder or blank JPEG cannot pass.
+  let thumbnailCard;
+  for (let i = 0; i < 40; i++) {
+    thumbnailCard = (await call({ type: "GET_STATE", activeTabId: tabId })).data.cards.find((card) => card.id === direct.id);
+    if (thumbnailCard?.thumbnail?.startsWith("data:image/jpeg;base64,")) break;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  assert.match(thumbnailCard.thumbnail, /^data:image\/jpeg;base64,/);
+  const colors = await popup.evaluate(async (src) => {
+    const image = new Image(); image.src = src; await image.decode();
+    const canvas = document.createElement("canvas"); canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+    const ctx = canvas.getContext("2d"); ctx.drawImage(image, 0, 0);
+    const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    const colors = new Set(); for (let i = 0; i < pixels.length; i += 64) colors.add(`${pixels[i]},${pixels[i + 1]},${pixels[i + 2]}`);
+    return colors.size;
+  }, thumbnailCard.thumbnail);
+  assert.ok(colors > 20, "Video thumbnail must contain actual test-pattern pixels");
   assert.ok((await call({ type: "DOWNLOAD_CARD", cardId: direct.id, variantId: direct.selectedVariantId })).ok);
   async function waitCompleted(cardId, activeTabId) {
     for (let i = 0; i < 120; i++) {
@@ -142,6 +183,6 @@ try {
   await Promise.all([hls, second].map((card) => waitCompleted(card.id, tabId)));
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ ok: true, direct: "completed", hls: completed.downloadMode, duration: info.format.duration,
-    streams: info.streams.map((s) => s.codec_type), rangeAndRetry: true, concurrentHlsJobs: 2,
+    streams: info.streams.map((s) => s.codec_type), rangeAndRetry: true, disguisedHlsSegments: true, concurrentHlsJobs: 2,
     downloadingAndCompletedVisibleFromB: true, temporaryArtifacts: work }, null, 2));
 } finally { await context?.close(); await new Promise((resolve) => server.close(resolve)); }

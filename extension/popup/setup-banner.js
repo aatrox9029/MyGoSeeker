@@ -9,6 +9,12 @@ const DEFAULT_TEXT = {
   missing: "Open the official GitHub releases page to get setup.exe.",
   error: "Unable to check native helper availability."
 };
+const EXTENSION_ONLY_TEXT = {
+  en: "Native helper is optional and disabled in Settings. Downloads use the built-in downloader. Enable it after installing NativeHelper EXE; Setup EXE only extracts the extension.",
+  "zh-Hant": "Native helper 為選用功能，目前在設定中關閉。下載使用內建下載器；安裝 NativeHelper EXE 後可在設定啟用。Setup EXE 只解壓擴充功能。",
+  "zh-Hans": "Native helper 是可选功能，目前在设置中关闭。下载使用内置下载器；安装 NativeHelper EXE 后可在设置启用。Setup EXE 只解压扩展程序。",
+  ja: "Native helper は任意で、設定で無効です。内蔵機能でダウンロードします。NativeHelper EXE の導入後に有効にできます。Setup EXE は拡張機能のみ展開します。"
+};
 
 function getText(messages, path, fallback) {
   return path.split(".").reduce((value, key) => value?.[key], messages) || fallback;
@@ -51,6 +57,12 @@ export function createSetupBannerController({
     }
 
     container.hidden = false;
+    if (currentState.nativeHelperEnabled === false) {
+      downloadButton.hidden = true;
+      refreshButton.disabled = currentState.status === "loading";
+      messageNode.textContent = EXTENSION_ONLY_TEXT[document.documentElement.lang] || EXTENSION_ONLY_TEXT.en;
+      return;
+    }
     downloadButton.hidden = false;
     downloadButton.textContent = currentState.status === "loading" ? checkingButtonText : downloadText;
     downloadButton.disabled = currentState.status === "loading"
@@ -74,7 +86,7 @@ export function createSetupBannerController({
     }
 
     if (currentState.showDownload) {
-      messageNode.textContent = `${unavailableText} ${readyText}`.trim();
+      messageNode.textContent = `${unavailableText} NativeHelper EXE (optional). ${readyText}`.trim();
       return;
     }
 

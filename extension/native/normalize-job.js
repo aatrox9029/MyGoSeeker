@@ -26,6 +26,7 @@ export function buildNativeJob({ card, variant, requestContext }) {
     pageUrl: requestContext.pageUrl || card.pageUrl || "",
     tabUrl: requestContext.tabUrl || card.pageUrl || "",
     mediaUrl: variant.url,
+    audioUrl: variant.audioUrl || "",
     methodHint: inferMethodHint(variant),
     outputName: `${safeTitle}.${ext === "m3u8" ? "mp4" : ext}`,
     selectedVariant: {

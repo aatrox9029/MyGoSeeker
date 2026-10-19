@@ -52,7 +52,7 @@ def main():
             with zipfile.ZipFile(bundled_archive()) as archive:
                 version = json.loads(archive.read("manifest.json"))["version"]
             result = extract_extension(Path(directory) / f"MyGoSeeker-{version}")
-            messagebox.showinfo("MyGoSeeker", f"解壓完成：{result['path']}\n\n請在 Chrome / Edge 擴充功能頁面啟用開發人員模式，再選擇『載入未封裝項目』並選取上述資料夾。\n\n此助手只解壓擴充功能，不會安裝或更新原生下載器。")
+            messagebox.showinfo("MyGoSeeker", f"解壓完成：{result['path']}\n\n請在 Chrome / Edge / Brave 擴充功能頁面啟用開發人員模式，再選擇『載入未封裝項目』並選取上述資料夾。\n\n此助手只解壓擴充功能，不會安裝或更新原生下載器。")
         except Exception as error:
             messagebox.showerror("MyGoSeeker", str(error))
     root.destroy()

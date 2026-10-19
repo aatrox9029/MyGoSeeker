@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "MyGoSeeker",
-  "version": "1.2.2",
+  "version": "1.0.2",
   "minimum_chrome_version": "116",
   "description": "Detect, organize, and download videos from the current page.",
   "permissions": [
@@ -11,7 +11,8 @@
     "webRequest",
     "offscreen",
     "nativeMessaging",
-    "cookies"
+    "cookies",
+    "alarms"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -46,13 +47,22 @@
         "<all_urls>"
       ],
       "js": [
+        "extension/content/player-discovery.js",
+        "extension/content/thumbnail-debug.js",
+        "extension/content/capture-visible-thumbnail.js",
+        "extension/content/capture-frame-thumbnail.js",
+        "extension/content/load-poster-thumbnail.js",
+        "extension/content/build-thumbnail.js",
+        "extension/content/task-control.js",
         "extension/content/fetch-blob.js",
         "extension/content/blob-download.js",
         "extension/content/record-video.js",
         "extension/content/binary-save.js",
         "content.js"
       ],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": true
     }
   ]
 }

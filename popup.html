@@ -11,6 +11,7 @@
     <button id="rescanBtn" class="action">Rescan</button>
     <button id="resetBypassBtn" class="action">Reset Bypass</button>
     <button id="openOptionsBtn" class="action">Settings</button>
+    <button id="openManagerBtn" class="action">Download manager</button>
   </header>
 
   <section id="setupBanner" class="setup-banner" hidden>
@@ -21,6 +22,11 @@
     </div>
   </section>
 
+  <section class="management-toolbar">
+    <input id="searchCards" type="search" aria-label="Search videos" placeholder="Search videos">
+    <select id="sortCards" aria-label="Sort videos"><option value="newest">Newest</option><option value="title">Title</option><option value="progress">Progress</option></select>
+    <button id="batchDownload">Download selected</button><div id="managementError" role="status"></div>
+  </section>
   <nav class="tabs" role="tablist">
     <button class="tab active" data-tab="available" role="tab">Available</button>
     <button class="tab" data-tab="downloading" role="tab">Downloading</button>
@@ -42,6 +48,7 @@
       </div>
       <div class="content">
         <div class="title-row">
+          <input type="checkbox" class="batch-select" aria-label="Select video">
           <h3 class="title"></h3>
         </div>
         <label class="variant-row">
@@ -50,9 +57,16 @@
         </label>
         <div class="actions">
           <button class="download-btn">Download</button>
+          <button class="preview-btn">Media info</button>
+          <button class="priority-btn" hidden>Prioritize</button>
+          <button class="recover-btn" hidden>Sign in and rescan source</button>
+          <button class="pause-btn task-control" hidden>Pause</button>
+          <button class="resume-btn task-control" hidden>Resume</button>
+          <button class="cancel-btn task-control" hidden>Cancel</button>
           <button class="export-record-btn" title="Export URLs to text file">Export Record</button>
         </div>
         <div class="status-row">
+          <pre class="preview-text" hidden></pre>
           <div class="progress"><div class="progress-inner"></div></div>
           <div class="status-text"></div>
           <div class="error-text"></div>

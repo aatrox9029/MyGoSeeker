@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { ensureNativePort, isNativeHostConnected } from "../extension/background/native-port.js";
 import { createNativePortMessageHandler } from "../extension/background/native-events.js";
 import { EVENT_TYPES } from "../shared/protocol.js";
+import { createSetupReleaseController } from "../extension/background/setup-release.js";
+import { buildNativeJob } from "../extension/native/normalize-job.js";
 
 function event() {
   const listeners = new Set();
@@ -35,4 +37,36 @@ test("native job failure/disconnect invokes extension fallback", async () => {
   await handler({ type: EVENT_TYPES.JOB_FAILED, jobId: "j", message: "403" });
   await handler({ type: "NATIVE_HOST_DISCONNECTED" });
   assert.deepEqual(fallbacks, [["c", "JOB_FAILED"], ["c", "NATIVE_HOST_DISCONNECTED"]]);
+});
+
+test("optional helper does not connect when disabled; enabled failures offer separate release", async () => {
+  let enabled = false, calls = 0;
+  const controller = createSetupReleaseController({ isEnabled: () => enabled, isNativeHostConnected: () => false,
+    ensureNativePort: async () => { calls++; throw new Error("not installed"); } });
+  const disabled = await controller.getSetupState(true);
+  assert.equal(disabled.nativeHelperEnabled, false);
+  assert.equal(calls, 0);
+  enabled = true;
+  const missing = await controller.getSetupState(true);
+  assert.equal(calls, 1);
+  assert.equal(missing.showDownload, true);
+  assert.equal(missing.nativeHelperBundled, true);
+  assert.match(missing.releasesPageUrl, /^https:\/\/github.com\//);
+});
+
+test("native job includes selected HLS alternate audio", () => {
+  const job = buildNativeJob({ card: { id: "card", title: "video" },
+    variant: { id: "v", url: "https://media.example/video.m3u8", isM3u8: true, audioUrl: "https://media.example/audio.m3u8" }, requestContext: {} });
+  assert.equal(job.audioUrl, "https://media.example/audio.m3u8");
+  assert.equal(job.sourceType, "hls");
+});
+
+test("paused native tasks clear their dead connection through fallback", async () => {
+  const card = { id: "paused", nativeJobId: "j", status: "paused" };
+  let calls = 0;
+  const handler = createNativePortMessageHandler({ EVENT_TYPES, getStateCards: () => [card],
+    findCardByNativeJobId: () => card, fallbackNativeDownload: async () => { calls++; card.nativeJobId = ""; } });
+  await handler({ type: "NATIVE_HOST_DISCONNECTED" });
+  assert.equal(calls, 1);
+  assert.equal(card.status, "paused");
 });

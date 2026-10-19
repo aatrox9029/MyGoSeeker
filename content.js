@@ -3,7 +3,11 @@ const MAX_REASONABLE_DURATION_SECONDS = 12 * 60 * 60;
 const TRANSFER_CHUNK_BYTES = 64 * 1024;
 let scanTimer = null;
 const binaryTransfers = new Map();
-const thumbnailCacheByVideo = new WeakMap();
+let lastDiscoverySignature = "";
+let lastDiscoverySentAt = 0;
+let scanning = false;
+const discoveryMetrics = { scans: 0, skipped: 0, elapsedMs: 0 };
+let sitePolicy = { detection: true }, sitePolicyCheckedAt = 0;
 
 function detectTypeFromUrl(rawUrl) {
   if (!rawUrl || typeof rawUrl !== "string") {
@@ -13,6 +17,7 @@ function detectTypeFromUrl(rawUrl) {
     return "blob";
   }
   const lower = rawUrl.toLowerCase();
+  if (lower.includes(".mpd")) return "mpd";
   if (lower.includes(".m3u8")) return "m3u8";
   if (lower.includes(".mp4")) return "mp4";
   if (lower.includes(".webm")) return "webm";
@@ -190,53 +195,8 @@ function buildVideoIdentityKey(video, index) {
   return parts.join("|");
 }
 
-async function captureFrameThumbnail(video) {
-  if (!video.videoWidth || !video.videoHeight) {
-    return "";
-  }
-
-  const canvas = document.createElement("canvas");
-  canvas.width = 320;
-  canvas.height = 180;
-
-  const ctx = canvas.getContext("2d");
-  if (!ctx) {
-    return "";
-  }
-
-  try {
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL("image/jpeg", 0.72);
-  } catch {
-    return "";
-  }
-}
-
-async function buildThumbnail(video, detectedType) {
-  const cached = thumbnailCacheByVideo.get(video);
-  if (cached && !cached.startsWith("data:image/svg+xml;base64,")) {
-    return cached;
-  }
-
-  if (video.poster) {
-    const poster = absoluteUrl(video.poster);
-    thumbnailCacheByVideo.set(video, poster);
-    return poster;
-  }
-
-  const frame = await captureFrameThumbnail(video);
-  if (frame) {
-    thumbnailCacheByVideo.set(video, frame);
-    return frame;
-  }
-
-  const placeholder = createPlaceholderThumbnail(detectedType);
-  thumbnailCacheByVideo.set(video, placeholder);
-  return placeholder;
-}
-
 async function collectDomCandidates() {
-  const videos = [...document.querySelectorAll("video")];
+  const videos = discoverVideoElements();
   const candidates = [];
 
   for (const [index, video] of videos.entries()) {
@@ -260,9 +220,11 @@ async function collectDomCandidates() {
         type,
         source: "dom",
         thumbnail: thumbnailCache,
+        thumbnailDebug: getThumbnailDebug(video),
         label: buildCandidateLabel(video, type, url),
         title: guessTitle(video),
-        identityKey,
+        subtitleTracks: [...video.querySelectorAll("track[src]")].map((track) => ({ uri: track.src, language: track.srclang || "", name: track.label || "Subtitles" })),
+        identityKey: `${location.href}|${identityKey}`,
         mergeKey: `${location.origin}|${identityKey}`
       });
     }
@@ -271,34 +233,44 @@ async function collectDomCandidates() {
   return candidates;
 }
 
-async function getPageThumbnail() {
-  const videos = [...document.querySelectorAll("video")];
-  for (const video of videos) {
-    if (video.poster) {
-      return absoluteUrl(video.poster);
-    }
-  }
-  for (const video of videos) {
-    const frame = await captureFrameThumbnail(video);
-    if (frame) {
-      return frame;
-    }
+async function getPageThumbnail(mediaUrl = "") {
+  const videos = discoverVideoElements();
+  const matches = mediaUrl ? videos.filter((video) => getCandidateUrlsFromVideo(video).includes(mediaUrl)) : videos;
+  const players = matches.length ? matches : videos.length === 1 ? videos : [];
+  for (const video of players) {
+    const thumbnail = await buildThumbnail(video, "video");
+    if (!thumbnail.startsWith("data:image/svg+xml;base64,")) return thumbnail;
   }
   return "";
 }
 
 async function sendDetectedCandidates() {
+  if (scanning) return;
+  scanning = true;
+  const started = performance.now();
+  try {
+  if (Date.now() - sitePolicyCheckedAt > 10000) {
+    const response = await chrome.runtime.sendMessage({ type: "GET_SITE_POLICY", pageUrl: location.href });
+    if (response?.ok) { sitePolicy = response.data; sitePolicyCheckedAt = Date.now(); }
+  }
+  if (!sitePolicy.detection) { discoveryMetrics.skipped++; return; }
+  observePlayerRoots();
   const candidates = await collectDomCandidates();
   if (candidates.length === 0) {
     return;
   }
+  const signature = JSON.stringify([location.href, document.title, candidates]);
+  if (signature === lastDiscoverySignature && Date.now() - lastDiscoverySentAt < 30000) { discoveryMetrics.skipped++; return; }
 
   await chrome.runtime.sendMessage({
     type: "DETECTED_CANDIDATES",
     candidates,
     pageUrl: location.href,
-    pageTitle: document.title
+    pageTitle: document.title,
+    scanMetrics: { ...discoveryMetrics, elapsedMs: discoveryMetrics.elapsedMs + performance.now() - started }
   });
+  lastDiscoverySignature = signature; lastDiscoverySentAt = Date.now();
+  } finally { scanning = false; discoveryMetrics.scans++; discoveryMetrics.elapsedMs += performance.now() - started; }
 }
 
 function scheduleScan() {
@@ -311,19 +283,15 @@ function scheduleScan() {
 }
 
 function observeDomChanges() {
-  const observer = new MutationObserver(() => {
-    scheduleScan();
-  });
-
-  observer.observe(document.documentElement || document.body, {
-    childList: true,
-    subtree: true,
-    attributes: true,
-    attributeFilter: ["src", "poster"]
-  });
+  observePlayerRoots();
+  // Attaching a shadow root to an existing host is not a DOM mutation.
+  setInterval(() => { if (!document.hidden) { observePlayerRoots(); scheduleScan(); } }, 5000);
 }
 
 function sendBlobProgress(cardId, payload) {
+  const task = contentTasks.get(cardId);
+  if (task?.cancelled) return Promise.resolve();
+  if (task?.paused && payload.status === "downloading") payload = { ...payload, status: "paused", stage: "Download paused" };
   return chrome.runtime.sendMessage({
     type: "BLOB_PROGRESS",
     cardId,
@@ -332,6 +300,16 @@ function sendBlobProgress(cardId, payload) {
 }
 
 async function handleBlobDownload(payload) {
+  if (contentTasks.has(payload.cardId)) return { ok: false, error: "Download already in progress" };
+  const task = { paused: false, cancelled: false, waiters: new Set() };
+  contentTasks.set(payload.cardId, task);
+  try {
+    const result = await runBlobDownload(payload);
+    return task.cancelled ? { ok: false, cancelled: true, error: "Download cancelled" } : result;
+  } finally { contentTasks.delete(payload.cardId); }
+}
+
+async function runBlobDownload(payload) {
   const { cardId, blobUrl, filenameBase, methodFamily } = payload;
   if (!cardId || !blobUrl || !filenameBase) {
     return { ok: false, error: "Invalid blob download payload" };
@@ -358,6 +336,7 @@ async function handleBlobDownload(payload) {
     await tryDirectBlobFetch(blobUrl, filenameBase, cardId);
     return { ok: true, mode: "blob-source-copy" };
   } catch (directError) {
+    await waitForContentTask(cardId);
     const video = findVideoByBlobUrl(blobUrl);
     try {
       await tryRecoverOriginalSource(video, filenameBase, cardId, blobUrl);
@@ -381,14 +360,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       case "PING":
         return { ok: true };
       case "RESCAN":
+        lastDiscoverySignature = ""; lastDiscoverySentAt = 0; sitePolicyCheckedAt = 0;
         await sendDetectedCandidates();
         return { ok: true };
+      case "GET_THUMBNAIL_DEBUG":
+        return { ok: true, videos: discoverVideoElements().map(getThumbnailDebug) };
       case "GET_PAGE_THUMBNAIL": {
-        const thumbnail = await getPageThumbnail();
+        const thumbnail = await getPageThumbnail(message.mediaUrl || "");
         return { ok: true, thumbnail };
       }
       case "DOWNLOAD_BLOB":
         return handleBlobDownload(message.payload || {});
+      case "QUERY_CONTENT_TASK": {
+        const task = contentTasks.get(message.cardId);
+        return { ok: true, active: Boolean(task && !task.cancelled), paused: Boolean(task?.paused) };
+      }
+      case "CONTROL_CONTENT_TASK":
+        return controlContentTask(message.cardId, message.action);
       case "START_M3U8_SAVE":
       case "START_BINARY_SAVE":
         return handleStartM3u8Save(message.payload || {});

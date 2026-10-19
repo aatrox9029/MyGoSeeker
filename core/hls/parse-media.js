@@ -1,5 +1,6 @@
 import { parseAttributeList } from "./parse-master.js";
 import { parseByteRange } from "./parse-byte-range.js";
+import { parseEncryptionKey } from "./parse-encryption-key.js";
 
 function buildSegmentExtensionSet(segments) {
   return [...new Set(
@@ -30,6 +31,9 @@ export function parseMediaPlaylist(text, baseUrl) {
   let mediaSequence = 0;
   let isEndList = false;
   let keyMethod = "NONE";
+  let encryption = null;
+  let keyId = 0;
+  let sequence = 0n;
 
   for (const rawLine of lines) {
     const line = rawLine.trim();
@@ -45,16 +49,20 @@ export function parseMediaPlaylist(text, baseUrl) {
       continue;
     }
     if (line.startsWith("#EXT-X-MEDIA-SEQUENCE")) {
-      mediaSequence = Number(line.split(":")[1] || 0);
+      const value = line.split(":")[1]?.trim() || "0";
+      if (!/^\d+$/.test(value) || BigInt(value) > 0xffffffffffffffffn) throw new Error("Invalid HLS media sequence");
+      sequence = BigInt(value);
+      mediaSequence = Number(value);
       continue;
     }
     if (line.startsWith("#EXT-X-ENDLIST")) {
       isEndList = true;
       continue;
     }
-    if (line.startsWith("#EXT-X-KEY")) {
+    if (line.startsWith("#EXT-X-KEY:")) {
       const attrs = parseAttributeList(line);
-      keyMethod = attrs.METHOD || keyMethod;
+      encryption = parseEncryptionKey(attrs, baseUrl, keyId++);
+      keyMethod = encryption?.method || "NONE";
       if (keyMethod !== "NONE") encrypted = true;
       continue;
     }
@@ -65,6 +73,10 @@ export function parseMediaPlaylist(text, baseUrl) {
           url: new URL(attrs.URI, baseUrl).href,
           index: initSegments.length
         };
+        if (encryption) {
+          if (!encryption.iv) throw new Error("HLS AES-128 initialization segment requires an explicit IV");
+          initSegment.encryption = { ...encryption };
+        }
         if (attrs.BYTERANGE) initSegment.byteRange = parseByteRange(attrs.BYTERANGE, initSegments.at(-1), initSegment.url);
         initSegments.push(initSegment);
       }
@@ -90,6 +102,7 @@ export function parseMediaPlaylist(text, baseUrl) {
       duration: Number.isFinite(currentDuration) ? currentDuration : 0,
       title: currentTitle
     };
+    if (encryption) segment.encryption = { ...encryption, iv: encryption.iv || (sequence + BigInt(segments.length)).toString(16).padStart(32, "0") };
     if (pendingRange) segment.byteRange = parseByteRange(pendingRange, segments.at(-1), segment.url);
     segments.push(segment);
     pendingRange = "";

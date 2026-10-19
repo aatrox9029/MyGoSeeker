@@ -1,0 +1,12 @@
+body { width: 100%; max-width: 1280px; margin: auto; min-height: 100vh; }
+main .panel.active { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 12px; }
+.manager-tools { padding: 12px; display: flex; flex-wrap: wrap; gap: 8px; }
+.manager-details { margin: 12px; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+#historyEntries div { display: flex; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+#historyEntries span { overflow-wrap: anywhere; flex: 1; }
+.dash-label { display: block; padding: 8px 0; }
+button, input, select { font: inherit; }
+.manager-tools button, .manager-details button { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; background: var(--surface); color: var(--text); cursor: pointer; }
+.manager-details input, .manager-details select { border: 1px solid var(--border); border-radius: 8px; padding: 8px; margin: 4px; }
+.manager-details button:hover { border-color: var(--primary); }
+.manager-details p { overflow-wrap: anywhere; }

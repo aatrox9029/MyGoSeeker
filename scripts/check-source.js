@@ -11,7 +11,7 @@ function walk(path) {
 }
 let checked = 0;
 for (const file of walk(".")) {
-  if (!file.endsWith(".js")) continue;
+  if (!/\.m?js$/.test(file)) continue;
   const result = spawnSync(process.execPath, ["--check", file], { encoding: "utf8" });
   if (result.status !== 0) throw new Error(`${file}: ${result.stderr}`);
   for (const match of readFileSync(file, "utf8").matchAll(/(?:from\s+|import\s*)["'](\.[^"']+)["']/g)) {
@@ -20,6 +20,8 @@ for (const file of walk(".")) {
   checked++;
 }
 const manifest = JSON.parse(readFileSync("manifest.json", "utf8"));
+const pkg = JSON.parse(readFileSync("package.json", "utf8")), lock = JSON.parse(readFileSync("package-lock.json", "utf8"));
+if ([manifest.version, pkg.version, lock.version, lock.packages[""].version].some((value) => value !== "1.0.2")) throw new Error("Project version must remain 1.0.2");
 for (const file of [manifest.background.service_worker, manifest.action.default_popup, manifest.options_page,
   ...manifest.content_scripts.flatMap((script) => script.js)]) {
   if (!existsSync(file)) throw new Error(`Missing manifest resource: ${file}`);

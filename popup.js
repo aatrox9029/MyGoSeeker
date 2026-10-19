@@ -3,6 +3,11 @@ import { buildVariantMethodOptionLabel, getDownloadModeDisplayLabel } from "./co
 import { createStateRefreshController } from "./extension/popup/state-refresh.js";
 import { createSetupBannerController } from "./extension/popup/setup-banner.js";
 import { RELEASES_PAGE_URL } from "./extension/background/setup-release.js";
+import { bindDownloadControls, renderDownloadControls } from "./extension/popup/download-controls.js";
+import { bindManagerControls } from "./extension/popup/manager-controls.js";
+import { bindCardDetails, renderCardDetails } from "./extension/popup/card-details.js";
+import { managerLabels } from "./extension/popup/manager-labels.js";
+const isManager = location.pathname.endsWith("manager.html");
 
 let activeTab = "available";
 let activeTabId = -1;
@@ -10,6 +15,7 @@ let state = { cards: [], settings: {} };
 let locale = "en";
 let messages = getTranslation(locale);
 const cardNodes = new Map();
+let versions = {};
 
 const tabButtons = [...document.querySelectorAll(".tab")];
 const panels = {
@@ -42,18 +48,14 @@ function formatStatus(card) {
   const progress = Number.isFinite(card.progress) ? Math.round(card.progress) : 0;
   const stage = translateStage(locale, card.stage || "Ready");
   const modeLabel = getDownloadModeDisplayLabel(card.downloadMode);
+  const transfer = formatTransferStats(card);
   const mode = modeLabel ? ` [${modeLabel}]` : "";
-  return `${stage}${mode} ${progress > 0 ? `(${progress}%)` : ""}`.trim();
+  return `${stage}${mode}${transfer ? ` · ${transfer}` : ""} ${progress > 0 ? `(${progress}%)` : ""}`.trim();
 }
 
 function getCardsBySection(section) {
-  if (section === "available") {
-    return state.cards.filter((card) => card.status === "available" || card.status === "error");
-  }
-  if (section === "downloading") {
-    return state.cards.filter((card) => card.status === "downloading");
-  }
-  return state.cards.filter((card) => card.status === "completed");
+  const cards = filterAndSortCards(state.cards, document.getElementById("searchCards").value, document.getElementById("sortCards").value);
+  return cards.filter((card) => section === "available" ? ["available", "error"].includes(card.status) : section === "downloading" ? ["queued", "downloading", "paused"].includes(card.status) : card.status === "completed");
 }
 
 function updateTabUi() {
@@ -136,12 +138,27 @@ function applyStaticText() {
   for (const button of tabButtons) {
     button.textContent = messages.popup.tabs[button.dataset.tab];
   }
+  const labels = managementLabels(locale);
+  document.getElementById("searchCards").placeholder = labels.search;
+  document.getElementById("searchCards").setAttribute("aria-label", labels.search);
+  for (const option of document.getElementById("sortCards").options) option.textContent = labels[option.value];
+  document.getElementById("batchDownload").textContent = labels.batch;
+  document.getElementById("openManagerBtn").textContent = managerLabels(locale).manager;
+  document.getElementById("openManagerBtn").hidden = isManager;
+  if (isManager) {
+    const text = managerLabels(locale);
+    for (const id of ["pauseAll", "resumeAll", "cancelAll", "retryAll", "inspect", "cleanup", "clearTask", "exportHistory"]) document.getElementById(id).textContent = text[id];
+    for (const [id, label] of [["storageTitle", text.storage], ["historyTitle", text.history]]) document.getElementById(id).textContent = label;
+    for (const node of document.querySelectorAll(".dash-label span")) node.textContent = text.live;
+  }
   setupBannerController.render();
 }
 
 function createCardElement(card) {
   const node = template.content.firstElementChild.cloneNode(true);
   node.dataset.cardId = card.id;
+  bindDownloadControls(node, card.id, callBackground);
+  bindCardDetails(node, card.id, callBackground, () => locale);
   const thumb = node.querySelector(".thumb");
   const title = node.querySelector(".title");
   const select = node.querySelector(".variant-select");
@@ -178,11 +195,12 @@ function createCardElement(card) {
       await callBackground({
         type: "DOWNLOAD_CARD",
         cardId: card.id,
-        variantId: select.value
+        variantId: select.value, options: isManager && node.querySelector(".dash-seconds")?.value ? { liveSeconds: Number(node.querySelector(".dash-seconds").value) } : {}
       });
     } catch (error) {
       console.error(error);
       downloadBtn.disabled = false;
+      errorText.textContent = error.message;
     }
   });
 
@@ -227,6 +245,7 @@ function createCardElement(card) {
     downloadedBadge
   };
   updateCardElement(node, card);
+  if (isManager) node.querySelector(".dash-label span").textContent = managerLabels(locale).live;
   return node;
 }
 
@@ -260,6 +279,11 @@ function syncVariantOptions(select, card) {
 }
 
 function updateCardElement(node, card) {
+  renderDownloadControls(node, card, locale);
+  renderCardDetails(node, card, locale);
+  if (isManager) node.querySelector(".dash-label").hidden = !card.variants.some((variant) => variant.type === "mpd");
+  node.querySelector(".batch-select").disabled = !isManager && ["queued", "downloading", "paused"].includes(card.status);
+  node.querySelector(".batch-select").setAttribute("aria-label", managementLabels(locale).select);
   const {
     thumb,
     title,
@@ -294,11 +318,12 @@ function updateCardElement(node, card) {
     : card.status === "error"
       ? messages.popup.labels.retry
       : messages.popup.labels.download;
-  downloadBtn.disabled = card.status === "downloading";
+  downloadBtn.disabled = ["queued", "downloading", "paused"].includes(card.status);
+  downloadBtn.hidden = ["queued", "downloading", "paused"].includes(card.status);
   exportBtn.style.display = (card.status === "completed" || card.status === "error" || card.debugReport) ? "block" : "none";
   progressInner.style.width = `${Math.max(0, Math.min(100, card.progress || 0))}%`;
   statusText.textContent = formatStatus(card);
-  errorText.textContent = card.error || "";
+  errorText.textContent = card.error ? `${card.error.split("\n")[0]} — ${downloadErrorGuidance(card.error, locale)}` : "";
 }
 
 function renderSection(section, emptyText) {
@@ -314,12 +339,14 @@ function renderSection(section, emptyText) {
   }
 
   const nextIds = new Set();
+  let cursor = panel.firstElementChild;
   for (const card of cards) {
     nextIds.add(card.id);
     const existingNode = cardNodes.get(card.id) || createCardElement(card);
     cardNodes.set(card.id, existingNode);
     updateCardElement(existingNode, card);
-    panel.appendChild(existingNode);
+    if (existingNode !== cursor) panel.insertBefore(existingNode, cursor);
+    cursor = existingNode.nextElementSibling;
   }
 
   for (const child of [...panel.children]) {
@@ -347,9 +374,14 @@ function render() {
 async function refreshState() {
   const response = await callBackground({
     type: "GET_STATE",
-    activeTabId
+    activeTabId, all: isManager, compact: true, versions
   });
-  state = response.data;
+  const data = response.data;
+  const merged = new Map(state.cards.map((card) => [card.id, card]));
+  for (const id of data.removed || []) merged.delete(id);
+  for (const card of data.cards) merged.set(card.id, card);
+  versions = data.versions || {};
+  state = { ...data, cards: [...merged.values()] };
   locale = normalizeLocale(state.settings?.locale || locale);
   messages = getTranslation(locale);
   applyStaticText();
@@ -362,6 +394,16 @@ async function initActiveTab() {
 }
 
 function bindActions() {
+  document.getElementById("openManagerBtn").onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL("manager.html") });
+  document.getElementById("searchCards").addEventListener("input", render);
+  document.getElementById("sortCards").addEventListener("change", render);
+  document.getElementById("batchDownload").addEventListener("click", async () => {
+    const button = document.getElementById("batchDownload"); button.disabled = true;
+    const selected = [...document.querySelectorAll(".panel.active .batch-select:checked:not(:disabled)")].map((input) => input.closest(".card"));
+    const results = await Promise.allSettled(selected.map((node) => callBackground({ type: "DOWNLOAD_CARD", cardId: node.dataset.cardId, variantId: node.querySelector(".variant-select").value, options: {} })));
+    document.getElementById("managementError").textContent = results.filter((result) => result.status === "rejected").map((result) => result.reason.message).join("; ");
+    button.disabled = false;
+  });
   for (const button of tabButtons) {
     button.addEventListener("click", () => {
       activeTab = button.dataset.tab;
@@ -372,7 +414,7 @@ function bindActions() {
   document.getElementById("rescanBtn").addEventListener("click", async () => {
     try {
       await callBackground({
-        type: "RESCAN_TAB",
+        type: isManager ? "RESCAN_ALL" : "RESCAN_TAB",
         tabId: activeTabId
       });
       await refreshState();
@@ -409,7 +451,12 @@ function bindActions() {
       refreshState(),
       setupBannerController.refresh()
     ]);
+    if (isManager) bindManagerControls({ call: callBackground, getState: () => state, refresh: refreshState, locale });
   } catch (error) {
     console.error(error);
   }
 })();
+
+import { filterAndSortCards, formatTransferStats } from "./extension/popup/manage-cards.js";
+import { managementLabels } from "./extension/popup/management-labels.js";
+import { downloadErrorGuidance } from "./core/downloads/error-guidance.js";

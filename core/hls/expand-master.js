@@ -4,6 +4,7 @@ import { chooseAudioTrack, buildMasterVariantLabel } from "./parse-master.js";
 export function expandMasterOptions(candidate, options, masterUrl, mergeKey) {
   return options.map((option) => ({
     ...candidate,
+    audioTracks: option.audioTracks || [], subtitleTracks: option.subtitleTracks || [], codecs: option.codecs || "",
     url: option.url, audioUrl: chooseAudioTrack(option.audioTracks)?.uri || "", masterUrl,
     type: "m3u8", source: `${candidate.source || "unknown"}:master`,
     label: buildMasterVariantLabel(option), score: option.score,

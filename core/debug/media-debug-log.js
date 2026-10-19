@@ -1,16 +1,18 @@
+import { redactSensitiveValue } from "../privacy/sensitive-data.js";
+
 export function createMediaDebugLog(context = {}) {
   return {
     id: context.id || `debug_${Date.now()}_${Math.random().toString(16).slice(2)}`,
     createdAt: Date.now(),
     updatedAt: Date.now(),
-    context: {
+    context: redactSensitiveValue({
       cardId: context.cardId || "",
       title: context.title || "",
       pageUrl: context.pageUrl || "",
       variantUrl: context.variantUrl || "",
       variantLabel: context.variantLabel || "",
       sourceType: context.sourceType || ""
-    },
+    }),
     status: "running",
     mode: "",
     entries: [],
@@ -58,5 +60,5 @@ function sanitizeDetails(details) {
   if (details == null) {
     return undefined;
   }
-  return JSON.parse(JSON.stringify(details));
+  return redactSensitiveValue(JSON.parse(JSON.stringify(details)));
 }

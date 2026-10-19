@@ -58,7 +58,7 @@ async function getCookiesForUrl(targetUrl) {
   }
 }
 
-export async function collectRequestContext({ card, variant }) {
+export async function collectRequestContext({ card, variant, allowCookies = true }) {
   const pageUrl = typeof card?.pageUrl === "string" ? card.pageUrl : "";
   const mediaUrl = typeof variant?.url === "string" ? variant.url : "";
   let tabUrl = pageUrl;
@@ -82,6 +82,6 @@ export async function collectRequestContext({ card, variant }) {
     origin: toOrigin(pageUrl || tabUrl || mediaUrl),
     userAgent: typeof navigator?.userAgent === "string" ? navigator.userAgent : "",
     headers: buildHeaderMap({ pageUrl: pageUrl || tabUrl, mediaUrl }),
-    cookies: await getCookiesForUrl(mediaUrl || pageUrl || tabUrl)
+    cookies: allowCookies ? await getCookiesForUrl(mediaUrl || pageUrl || tabUrl) : []
   };
 }

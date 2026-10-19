@@ -1,0 +1,44 @@
+name: Verify extension and Windows package
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  verify:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, edge, brave]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - run: npx playwright install chromium
+      - if: matrix.browser == 'brave'
+        run: choco install brave -y --no-progress
+      - name: Select browser
+        shell: pwsh
+        run: |
+          if ('${{ matrix.browser }}' -eq 'edge') {
+            "MGS_BROWSER_EXECUTABLE=C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" >> $env:GITHUB_ENV
+          }
+          if ('${{ matrix.browser }}' -eq 'brave') {
+            $candidates = @('C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe', 'C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe')
+            $browserPath = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+            if (-not $browserPath) { throw 'Brave executable not found' }
+            "MGS_BROWSER_EXECUTABLE=$browserPath" >> $env:GITHUB_ENV
+          }
+      - run: choco install ffmpeg -y --no-progress
+      - run: python -m pip install -r requirements-build.txt
+      - run: npm run verify
+      - if: matrix.browser == 'chromium'
+        run: python scripts/build-release.py
+      - uses: actions/upload-artifact@v4
+        if: matrix.browser == 'chromium'
+        with:
+          name: MyGoSeeker-Windows
+          path: dist/

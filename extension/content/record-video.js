@@ -65,6 +65,7 @@ async function recordFromVideoElement(video, fileBase, cardId) {
     throw error;
   }
   const chunks = [];
+  let recordedBytes = 0;
 
   const durationInfo = resolveEffectiveDuration(video);
   const duration = durationInfo.duration;
@@ -116,6 +117,11 @@ async function recordFromVideoElement(video, fileBase, cardId) {
         return;
       }
       clearTimeout(inactivityTimer);
+      if (contentTasks.get(cardId)?.paused) {
+        clearStopTimer();
+        if (recorder.state === "recording") recorder.pause();
+        return;
+      }
       const activelyPlaying = !video.paused && !video.ended && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
       if (activelyPlaying) {
         waitingForPlayback = false;
@@ -137,6 +143,8 @@ async function recordFromVideoElement(video, fileBase, cardId) {
         return;
       }
       finished = true;
+      const task = contentTasks.get(cardId);
+      if (task) task.onControl = null;
       clearTimeout(inactivityTimer);
       if (recorder.state !== "inactive") { try { recorder.stop(); } catch {} }
       clearInterval(progressInterval);
@@ -190,6 +198,8 @@ async function recordFromVideoElement(video, fileBase, cardId) {
 
     recorder.ondataavailable = (event) => {
       if (event.data && event.data.size > 0) {
+        recordedBytes += event.data.size;
+        if (recordedBytes > 256 * 1024 * 1024) { chunks.length = 0; finish(new Error("Recording exceeds safe buffer limit (256 MiB)")); return; }
         chunks.push(event.data);
       }
     };
@@ -210,6 +220,8 @@ async function recordFromVideoElement(video, fileBase, cardId) {
           allowMetadataFailure: true,
           minSize: 32 * 1024
         });
+        await waitForContentTask(cardId);
+        if (finished) return;
 
         const ext = getExtFromMime(mimeType) || config.ext;
         const filename = `${fileBase}.${ext}`;
@@ -231,6 +243,13 @@ async function recordFromVideoElement(video, fileBase, cardId) {
     };
 
     video.addEventListener("ended", onEnded);
+    const task = contentTasks.get(cardId);
+    if (task) task.onControl = (action) => {
+      if (action === "cancel") { finish(contentTaskError()); return; }
+      if (action === "pause") { task.resumePlayback = !video.paused; video.pause(); }
+      if (action === "resume" && task.resumePlayback) Promise.resolve(video.play()).catch(() => {});
+      updateRecorderForPlaybackState("paused");
+    };
     video.addEventListener("play", onPlayStateChange);
     video.addEventListener("playing", onPlayStateChange);
     video.addEventListener("pause", onPauseStateChange);
@@ -266,6 +285,7 @@ async function recordFromVideoElement(video, fileBase, cardId) {
         // Ignore play failure and still attempt recording current playback state.
       })
       .finally(() => {
+        if (finished) return;
         try {
           recorder.start(1000);
           updateRecorderForPlaybackState("playback");

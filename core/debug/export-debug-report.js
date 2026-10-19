@@ -1,12 +1,20 @@
+import { redactSensitiveText, redactSensitiveValue } from "../privacy/sensitive-data.js";
+import { BUILD_INFO } from "./build-info.js";
+import { classifyDownloadError } from "../downloads/error-guidance.js";
+
 function formatTimestamp(value) {
   return Number.isFinite(value) ? new Date(value).toISOString() : "n/a";
 }
 
 export function buildDebugReport({ card, log, extraNotes = [] }) {
+  card = redactSensitiveValue(card);
+  log = redactSensitiveValue(log);
   const lines = [
     "# Video Download Debug Report",
     "",
     `Generated: ${new Date().toISOString()}`,
+    `Build: ${JSON.stringify(BUILD_INFO)}`,
+    `Error category: ${card?.error ? classifyDownloadError(card.error) : "none"}`,
     "",
     "## Card",
     `- Title: ${card?.title || "Unknown"}`,
@@ -23,6 +31,8 @@ export function buildDebugReport({ card, log, extraNotes = [] }) {
     `- Source type: ${log?.context?.sourceType || "n/a"}`,
     `- Variant URL: ${log?.context?.variantUrl || "n/a"}`
   ];
+
+  if (card?.thumbnailDebug) lines.push("", "## Thumbnail Diagnostics", JSON.stringify(card.thumbnailDebug));
 
   if (log?.summary && Object.keys(log.summary).length > 0) {
     lines.push("", "## Pipeline Summary");
@@ -46,5 +56,5 @@ export function buildDebugReport({ card, log, extraNotes = [] }) {
     }
   }
 
-  return `${lines.join("\n")}\n`;
+  return redactSensitiveText(`${lines.join("\n")}\n`);
 }

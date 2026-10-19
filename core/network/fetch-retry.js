@@ -1,9 +1,15 @@
+import { abortableDelay, throwIfAborted } from "../tasks/operation-control.js";
+import { readLimitedResponse } from "./read-limited-response.js";
+
 export async function fetchWithRetry(url, responseType, options = {}) {
   const { logger, stage = "fetch", retries = 3, retryDelayMs = 400,
     timeoutMs = 30000, byteRange, fetchImpl = fetch, onResponse } = options;
   let lastError;
   for (let attempt = 1; attempt <= Math.max(1, retries); attempt += 1) {
+    throwIfAborted(options.signal);
     const controller = new AbortController();
+    const abort = () => controller.abort(options.signal.reason);
+    options.signal?.addEventListener("abort", abort, { once: true });
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     let retryable = true;
     let retryAfterMs = 0;
@@ -11,7 +17,7 @@ export async function fetchWithRetry(url, responseType, options = {}) {
       const headers = new Headers(options.headers);
       if (byteRange) headers.set("Range", `bytes=${byteRange.offset}-${byteRange.offset + byteRange.length - 1}`);
       logger?.("info", stage, "Fetching resource", { url, attempt, retries, byteRange });
-      const response = await fetchImpl(url, { credentials: "include", headers, signal: controller.signal });
+      const response = await fetchImpl(url, { credentials: options.credentials || "include", headers, signal: controller.signal });
       if (!response.ok) {
         retryable = [408, 425, 429].includes(response.status) || response.status >= 500;
         const delay = response.headers.get("retry-after");
@@ -20,7 +26,9 @@ export async function fetchWithRetry(url, responseType, options = {}) {
         await response.body?.cancel();
         throw new Error(`HTTP ${response.status}`);
       }
-      let data = await response[responseType]();
+      const limited = options.maxBytes ? await readLimitedResponse(response, options.maxBytes) : null;
+      let data = limited ? (responseType === "text" ? new TextDecoder().decode(limited) : limited) : await response[responseType]();
+      throwIfAborted(options.signal);
       if (responseType === "arrayBuffer") {
         if (byteRange) {
           if (response.status === 200) {
@@ -33,7 +41,7 @@ export async function fetchWithRetry(url, responseType, options = {}) {
           }
         }
         if (!data.byteLength) throw new Error("Empty media response");
-        if (/text\/|json|html/i.test(response.headers.get("content-type") || "")) {
+        if (!options.allowText && /text\/|json|html/i.test(response.headers.get("content-type") || "")) {
           retryable = false;
           throw new Error("Server returned text instead of media");
         }
@@ -42,12 +50,13 @@ export async function fetchWithRetry(url, responseType, options = {}) {
       logger?.("info", stage, "Resource received", { attempt, status: response.status, bytes: data.byteLength });
       return data;
     } catch (error) {
+      throwIfAborted(options.signal);
       lastError = controller.signal.aborted ? new Error(`Fetch timed out after ${timeoutMs}ms`)
         : error instanceof Error ? error : new Error(String(error));
       logger?.("warn", stage, "Resource fetch failed", { url, attempt, retryable, error: lastError.message });
       if (!retryable || attempt >= retries) throw lastError;
-    } finally { clearTimeout(timer); }
-    await new Promise((resolve) => setTimeout(resolve, Math.max(retryAfterMs, retryDelayMs * 2 ** (attempt - 1))));
+    } finally { clearTimeout(timer); options.signal?.removeEventListener("abort", abort); }
+    await abortableDelay(Math.max(retryAfterMs, retryDelayMs * 2 ** (attempt - 1) * (0.75 + (options.random || Math.random)() * 0.5)), options.signal);
   }
   throw lastError;
 }

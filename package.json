@@ -1,11 +1,18 @@
 {
   "name": "mygoseeker",
-  "version": "1.2.2",
+  "version": "1.0.2",
   "private": true,
   "type": "module",
   "scripts": {
     "test": "node --test tests/*.test.js",
-    "check": "node scripts/check-source.js"
+    "check": "node scripts/check-source.js",
+    "test:thumbnail:browser": "node tests/browser-thumbnail-smoke.mjs",
+    "test:preview:browser": "node tests/browser-media-preview-smoke.mjs",
+    "test:browser": "node tests/browser-smoke.mjs",
+    "test:p0:browser": "node tests/browser-p0-smoke.mjs",
+    "test:p1p2:browser": "node tests/browser-p1p2-smoke.mjs",
+    "test:native": "python -m unittest discover -s tests -p test_native_helper.py",
+    "verify": "npm run check && npm test && python -m unittest discover -s tests -p test_setup.py && npm run test:native && npm run test:preview:browser && npm run test:thumbnail:browser && npm run test:browser && npm run test:p0:browser && npm run test:p1p2:browser"
   },
   "devDependencies": {
     "@ffmpeg/core": "0.12.9",

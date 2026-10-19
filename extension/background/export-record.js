@@ -1,3 +1,5 @@
+import { redactSensitiveText } from "../../core/privacy/sensitive-data.js";
+
 export async function exportCardRecord({
   card,
   ensureInitialized,
@@ -31,7 +33,7 @@ export async function exportCardRecord({
   const safeTitle = sanitizeFileName(card.title || "download").slice(0, 50);
   const timestamp = new Date().toISOString().slice(0, 10);
   const filename = `${safeTitle}_debug_${timestamp}.md`;
-  const encodedContent = encodeURIComponent(content);
+  const encodedContent = encodeURIComponent(redactSensitiveText(content));
   const dataUrl = `data:text/markdown;charset=utf-8,${encodedContent}`;
 
   await chromeDownloads.download({

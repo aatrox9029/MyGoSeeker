@@ -4,6 +4,6 @@ The extension bundles the unmodified ESM build of `@ffmpeg/core` 0.12.9 (single 
 
 - FFmpeg WebAssembly core: GPL-2.0-or-later. Upstream source and build instructions: https://github.com/ffmpegwasm/ffmpeg.wasm/tree/core%400.12.9 . Package provenance and checksums are recorded in package-lock.json. GPL text is included at vendor/ffmpeg/GPL-2.0.txt.
 - JavaScript wrapper: MIT. Upstream: https://github.com/ffmpegwasm/ffmpeg.wasm . MIT text is included at vendor/ffmpeg/MIT.txt.
-- PyInstaller is used only to package the extraction assistant. Its bootloader redistribution exception is described at https://pyinstaller.org/en/stable/license.html .
+- PyInstaller packages the extraction assistant and separate optional native helper. Its bootloader redistribution exception is described at https://pyinstaller.org/en/stable/license.html .
 
-The setup EXE contains the extension ZIP and uses the Python standard library for extraction and the installation dialog. No system FFmpeg executable or native messaging host is bundled.
+The Setup EXE contains the extension ZIP and uses the Python standard library for extraction and the installation dialog. The separate NativeHelper EXE contains the Python standard-library native host and its optional installer. Neither EXE bundles system FFmpeg or ffprobe. Native HLS invokes the user's separately installed executables; their license depends on the installed build.

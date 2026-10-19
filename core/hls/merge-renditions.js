@@ -31,6 +31,10 @@ function rewritePlaylistText(originalText, resources, fallbackExt, prefix) {
     if (!line) {
       return rawLine;
     }
+    if (line.startsWith("#EXT-X-KEY:")) {
+      if (resources.some((item) => item.encryption && !item.decrypted)) throw new Error("HLS encrypted resource was not decrypted before remux");
+      return "";
+    }
     if (line.startsWith("#EXT-X-MAP")) {
       const initResource = initResources[initIndex++];
       if (!initResource) {
@@ -45,15 +49,16 @@ function rewritePlaylistText(originalText, resources, fallbackExt, prefix) {
     const resource = segmentResources[segmentIndex];
     segmentIndex += 1;
     return resource
-      ? fileNameForResource(prefix, "segment", resource.index || 0, resource.sourceUrl, fallbackExt)
+      ? resource.fileName
       : rawLine;
   }).join("\n");
 }
 
 function normalizeResources(resources, fallbackExt, prefix) {
+  const next = { init: 0, segment: 0 };
   return resources.map((resource) => ({
     ...resource,
-    fileName: fileNameForResource(prefix, resource.kind, resource.index || 0, resource.sourceUrl, fallbackExt)
+    fileName: fileNameForResource(prefix, resource.kind, next[resource.kind]++, resource.sourceUrl, fallbackExt)
   }));
 }
 

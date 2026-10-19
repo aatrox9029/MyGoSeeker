@@ -1,6 +1,9 @@
 import { getLocaleOptions, getTranslation, normalizeLocale } from "./i18n.js";
+import { createSiteControls } from "./extension/options/site-controls.js";
+import { BUILD_INFO } from "./core/debug/build-info.js";
+const siteControls = createSiteControls(callBackground);
 
-const VIDEO_TYPES = ["mp4", "webm", "m3u8", "blob", "mov", "m4v", "mkv", "avi", "flv", "mpeg"];
+const VIDEO_TYPES = ["mp4", "webm", "m3u8", "mpd", "blob", "mov", "m4v", "mkv", "avi", "flv", "mpeg"];
 
 const typeGrid = document.getElementById("typeGrid");
 const languageSelect = document.getElementById("languageSelect");
@@ -20,6 +23,9 @@ function setStatus(message, isError = false) {
 }
 
 function applyStaticText() {
+  const nativeText = nativeHelperText(locale);
+  for (const [id, value] of Object.entries(nativeText)) document.getElementById(id).textContent = value;
+  document.getElementById("fileNameRuleLabel").textContent = managementLabels(locale).fileRule;
   document.documentElement.lang = locale;
   document.title = messages.options.title;
   document.querySelector("h1").textContent = messages.options.title;
@@ -37,6 +43,8 @@ function applyStaticText() {
   document.getElementById("keepSettingsLabel").textContent = messages.options.labels.keepSettings;
   clearCacheBtn.textContent = messages.options.labels.clearCache;
   saveBtn.textContent = messages.options.labels.save;
+  siteControls.render(locale);
+  document.getElementById("buildInfo").textContent = `${BUILD_INFO.version} · ${BUILD_INFO.builtAt} · ${BUILD_INFO.revision}`;
 }
 
 function renderLanguageOptions(selectedLocale) {
@@ -85,7 +93,10 @@ function readSettingsFromForm() {
     enabledTypes[checkbox.dataset.type] = checkbox.checked;
   }
   return {
+    ...siteControls.read(),
     locale: normalizeLocale(languageSelect.value),
+    fileNameRule: document.getElementById("fileNameRule").value,
+    nativeHelperEnabled: document.getElementById("nativeHelperEnabled").checked,
     enabledTypes,
     downloadHistoryEnabled: downloadHistoryEnabled.checked,
     preserveOldPages: preserveOldPages.checked
@@ -95,6 +106,10 @@ function readSettingsFromForm() {
 async function loadSettings() {
   const response = await callBackground({ type: "GET_SETTINGS" });
   const settings = response.data;
+  siteControls.load(settings, normalizeLocale(settings.locale));
+  document.getElementById("nativeHelperEnabled").checked = settings.nativeHelperEnabled === true;
+  document.getElementById("extensionId").value = chrome.runtime.id;
+  document.getElementById("fileNameRule").value = settings.fileNameRule || "{title}";
   locale = normalizeLocale(settings.locale || locale);
   messages = getTranslation(locale);
   renderLanguageOptions(locale);
@@ -144,3 +159,6 @@ clearCacheBtn.addEventListener("click", async () => {
     setStatus(error instanceof Error ? error.message : String(error), true);
   }
 })();
+
+import { managementLabels } from "./extension/popup/management-labels.js";
+import { nativeHelperText } from "./extension/native/settings-text.js";

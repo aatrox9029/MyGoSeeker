@@ -343,6 +343,8 @@ export function translateStage(locale, stage) {
   if (!text) {
     return "";
   }
+  const streamStage = translateStreamStage(normalizeLocale(locale), text);
+  if (streamStage) return streamStage;
 
   const messages = getTranslation(locale).status;
   const exactMap = new Map([
@@ -415,3 +417,4 @@ export function translateStage(locale, stage) {
 
   return text;
 }
+import { translateStreamStage } from "./core/i18n/stream-stage.js";

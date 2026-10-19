@@ -1,6 +1,6 @@
 # MyGoSeeker
 
-[繁體中文](README.md) | [English](README.en.md)
+[繁體中文](README.zh_TW.md) | [English](README.md)
 
 MyGoSeeker is a Chrome / Edge / Brave extension that detects videos on web pages and offers download options.
 

@@ -1,6 +1,6 @@
 # MyGoSeeker
 
-[繁體中文](README.md) | [English](README.en.md)
+[繁體中文](README.zh_TW.md) | [English](README.md)
 
 MyGoSeeker 是 Chrome / Edge / Brave 擴充功能，可偵測網頁中的影片並提供下載選項。
 

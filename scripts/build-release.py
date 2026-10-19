@@ -22,7 +22,7 @@ def main():
     files = [path for path in root.iterdir() if path.suffix in {".js", ".html", ".css", ".png"}]
     files.append(root / "manifest.json")
     # Source exports may omit prose documentation; the extension still builds.
-    files += [root / name for name in ["README.md", "README.en.md", "IMPROVEMENTS.md", "NATIVE_HELPER.md", "THIRD_PARTY_NOTICES.md"] if (root / name).is_file()]
+    files += [root / name for name in ["README.md", "README.en.md", "README.zh_TW.md", "IMPROVEMENTS.md", "NATIVE_HELPER.md", "THIRD_PARTY_NOTICES.md"] if (root / name).is_file()]
     for directory in ["core", "extension", "shared", "vendor"]:
         files += [path for path in (root / directory).rglob("*") if path.is_file() and path.stat().st_size > 0]
     archive_path = output / f"MyGoSeeker-{version}-Extension.zip"
